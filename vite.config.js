@@ -7,5 +7,5 @@ import react from "@vitejs/plugin-react";
 // Kalau memakai custom domain, ganti base menjadi "/".
 export default defineConfig({
   plugins: [react()],
-  base: "/rt-digital/",
+  base: "/RT-digital/",
 });
