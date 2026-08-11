@@ -27,7 +27,7 @@
    - Semua request (GET & POST) yang tidak menyertakan token yang cocok
      akan ditolak.
    --------------------------------------------------------------------- */
-const API_TOKEN = "GANTI_DENGAN_TOKEN_RAHASIA_ANDA_SENDIRI";
+const API_TOKEN = "Mocacino3in1kopiku";
 
 const SHEET_NAMES = {
   USERS: "Users",
