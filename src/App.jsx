@@ -10,7 +10,7 @@ import {
   Menu, X, LogOut, Plus, Search, Filter as FilterIcon, ChevronLeft, ChevronRight,
   Eye, Pencil, Trash2, Paperclip, Banknote, Landmark, CreditCard, CheckCircle2,
   AlertTriangle, Info, ChevronDown, Building2, ReceiptText, Shuffle, Trophy,
-  Printer, FileSpreadsheet, Save,
+  Printer, FileSpreadsheet, Save, LogIn, ArrowLeft,
 } from "lucide-react";
 
 /* ============================================================
@@ -649,7 +649,7 @@ const Topbar = ({ page, user, onLogout, onMenu, onAdd }) => (
 /* ============================================================
    LOGIN PAGE
    ============================================================ */
-const LoginPage = ({ onLogin }) => {
+const LoginPage = ({ onLogin, onBack }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -678,6 +678,11 @@ const LoginPage = ({ onLogin }) => {
     <div className="rtd-root flex min-h-screen items-center justify-center px-4 py-10" style={{ background: C.bg }}>
       <GlobalStyle />
       <div className="w-full max-w-sm">
+        {onBack && (
+          <button onClick={onBack} className="rtd-focus mb-4 flex items-center gap-1.5 text-xs font-semibold" style={{ color: C.textMuted }}>
+            <ArrowLeft size={14} /> Kembali ke kondisi keuangan
+          </button>
+        )}
         <div className="mb-7 flex flex-col items-center text-center">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl" style={{ background: C.navy }}>
             <Building2 size={22} color="#fff" />
@@ -722,6 +727,50 @@ const LoginPage = ({ onLogin }) => {
         </Card>
         <p className="mt-5 text-center text-xs" style={{ color: C.textFaint }}>DATA DEMO — semua transaksi pada aplikasi ini adalah data contoh.</p>
       </div>
+    </div>
+  );
+};
+
+/* ============================================================
+   PUBLIC HOME (tampilan publik — tanpa perlu login)
+   Menyajikan kondisi keuangan (saldo, pemasukan, pengeluaran) dan
+   status arisan langsung saat sistem dibuka. Aksi admin (tambah/
+   edit/hapus transaksi, undi arisan, dll) hanya tersedia setelah
+   login lewat tombol "Masuk".
+   ============================================================ */
+const PublicHome = ({ transactions, payments, settings, arisan, onLoginClick }) => {
+  const readOnlyNotify = { view: () => {}, edit: () => {}, del: () => {} };
+  return (
+    <div className="rtd-root min-h-screen" style={{ background: C.bg }}>
+      <GlobalStyle />
+      <header className="no-print sticky top-0 z-10 flex items-center justify-between border-b px-4 py-3 lg:px-6" style={{ borderColor: C.border, background: "#fff" }}>
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: C.navy }}>
+            <Building2 size={18} color="#fff" />
+          </div>
+          <div className="leading-tight">
+            <p className="rtd-display text-sm font-bold" style={{ color: C.text }}>RT DIGITAL</p>
+            <p className="text-[11px]" style={{ color: C.textMuted }}>Kondisi Keuangan &amp; Arisan RT</p>
+          </div>
+        </div>
+        <Btn size="sm" onClick={onLoginClick}><LogIn size={14} /> Masuk</Btn>
+      </header>
+
+      <main className="mx-auto max-w-6xl px-4 py-5 lg:px-6 lg:py-6">
+        <div className="no-print mb-5 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold" style={{ background: C.orangeSoft, color: C.orange }}>
+          <Info size={13} /> DATA DEMO — seluruh data di bawah ini adalah data contoh untuk keperluan simulasi. Login sebagai pengurus untuk mengelola data.
+        </div>
+
+        <section className="mb-8">
+          <h2 className="rtd-display mb-3 text-base font-bold" style={{ color: C.text }}>Kondisi Keuangan</h2>
+          <Dashboard transactions={transactions} payments={payments} settings={settings} notify={readOnlyNotify} readOnly />
+        </section>
+
+        <section>
+          <h2 className="rtd-display mb-3 text-base font-bold" style={{ color: C.text }}>Arisan</h2>
+          <ArisanPage arisan={arisan} payments={payments} settings={settings} readOnly />
+        </section>
+      </main>
     </div>
   );
 };
@@ -935,7 +984,7 @@ const StatCard = ({ label, value, tone, icon: Icon, ledger }) => (
   </Card>
 );
 
-const Dashboard = ({ transactions, payments, settings, notify }) => {
+const Dashboard = ({ transactions, payments, settings, notify, readOnly }) => {
   const [range, setRange] = useState("30");
 
   const totals = useMemo(() => {
@@ -1007,7 +1056,13 @@ const Dashboard = ({ transactions, payments, settings, notify }) => {
         <div className="flex items-center justify-between border-b px-5 py-4" style={{ borderColor: C.border }}>
           <h3 className="rtd-display text-sm font-bold" style={{ color: C.text }}>Transaksi Terbaru</h3>
         </div>
-        <TxTable rows={recent} onView={(t) => notify.view(t)} onEdit={(t) => notify.edit(t)} onDelete={(t) => notify.del(t)} />
+        <TxTable
+          rows={recent}
+          hideActions={readOnly}
+          onView={(t) => notify.view(t)}
+          onEdit={(t) => notify.edit(t)}
+          onDelete={(t) => notify.del(t)}
+        />
       </Card>
     </div>
   );
@@ -1428,7 +1483,7 @@ const JimpitanPage = ({ jimpitan, onAddJimpitan }) => {
 /* ============================================================
    ARISAN PAGE
    ============================================================ */
-const ArisanPage = ({ arisan, payments, settings, onDraw, goToPembayaran }) => {
+const ArisanPage = ({ arisan, payments, settings, onDraw, goToPembayaran, readOnly }) => {
   const members = ARISAN_MEMBER_IDS.map((id) => RESIDENT_MAP[id]);
   const paymentByResident = useMemo(() => Object.fromEntries(payments.map((p) => [p.resident_id, p])), [payments]);
   const sudahSetor = (id) => {
@@ -1444,10 +1499,12 @@ const ArisanPage = ({ arisan, payments, settings, onDraw, goToPembayaran }) => {
 
   return (
     <div className="space-y-5">
-      <div className="no-print flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs" style={{ background: C.navyFaint, color: C.navy }}>
-        <Info size={14} className="mt-0.5 flex-shrink-0" />
-        <span>Setoran arisan &amp; dana sosial kini dicatat lewat menu <button onClick={goToPembayaran} className="font-semibold underline">Pembayaran Warga</button>. Halaman ini menampilkan status setoran dan pengundian pemenang.</span>
-      </div>
+      {!readOnly && (
+        <div className="no-print flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs" style={{ background: C.navyFaint, color: C.navy }}>
+          <Info size={14} className="mt-0.5 flex-shrink-0" />
+          <span>Setoran arisan &amp; dana sosial kini dicatat lewat menu <button onClick={goToPembayaran} className="font-semibold underline">Pembayaran Warga</button>. Halaman ini menampilkan status setoran dan pengundian pemenang.</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Card className="p-4"><p className="text-xs font-semibold" style={{ color: C.textMuted }}>PESERTA ARISAN</p><p className="rtd-display mt-1.5 text-lg font-bold tabular-nums" style={{ color: C.text }}>{members.length} warga</p></Card>
@@ -1467,9 +1524,11 @@ const ArisanPage = ({ arisan, payments, settings, onDraw, goToPembayaran }) => {
             <h3 className="rtd-display text-sm font-bold" style={{ color: C.text }}>Peserta &amp; Setoran — Periode {ARISAN_PERIOD}</h3>
             <p className="text-xs" style={{ color: C.textMuted }}>Total kewajiban bulanan {formatRupiah(settings.arisanAmount + settings.sosialWajibAmount)} / warga (Arisan {formatRupiah(settings.arisanAmount)} + Dana Sosial {formatRupiah(settings.sosialWajibAmount)})</p>
           </div>
-          <Btn size="sm" variant="subtle" onClick={onDraw} disabled={!!thisMonthWinner || eligible.length === 0}>
-            <Shuffle size={14} /> Undi Pemenang
-          </Btn>
+          {!readOnly && (
+            <Btn size="sm" variant="subtle" onClick={onDraw} disabled={!!thisMonthWinner || eligible.length === 0}>
+              <Shuffle size={14} /> Undi Pemenang
+            </Btn>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[520px] text-sm">
@@ -1873,6 +1932,7 @@ const ReportPage = ({ transactions }) => {
    ============================================================ */
 export default function App() {
   const [user, setUser] = useState(null);
+  const [showLogin, setShowLogin] = useState(false);
   const [page, setPage] = useState("dashboard");
   const [transactions, setTransactions] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -1907,10 +1967,13 @@ export default function App() {
       .finally(() => setLoadingData(false));
   };
 
+  // Data kondisi keuangan & arisan dimuat begitu sistem dibuka, tanpa
+  // menunggu login — supaya pengunjung langsung melihat saldo,
+  // pemasukan, pengeluaran, dan status arisan.
   useEffect(() => {
-    if (user) loadFromSheet();
+    loadFromSheet();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, []);
 
   const actions = {
     view: (tx) => setModal({ type: "detail", tx }),
@@ -2053,8 +2116,6 @@ export default function App() {
     }
   };
 
-  if (!user) return <LoginPage onLogin={setUser} />;
-
   if (loadingData) {
     return (
       <div className="rtd-root flex min-h-screen items-center justify-center" style={{ background: C.bg }}>
@@ -2078,6 +2139,24 @@ export default function App() {
           <Btn className="mt-4 w-full" onClick={loadFromSheet}>Coba Lagi</Btn>
         </Card>
       </div>
+    );
+  }
+
+  // Belum login: pengunjung langsung disajikan kondisi keuangan &
+  // arisan (PublicHome). Tombol "Masuk" membuka LoginPage untuk
+  // pengurus/bendahara yang perlu akses kelola data.
+  if (!user) {
+    if (showLogin) {
+      return <LoginPage onLogin={(acc) => { setUser(acc); setShowLogin(false); }} onBack={() => setShowLogin(false)} />;
+    }
+    return (
+      <PublicHome
+        transactions={transactions}
+        payments={payments}
+        settings={settings}
+        arisan={arisan}
+        onLoginClick={() => setShowLogin(true)}
+      />
     );
   }
 
