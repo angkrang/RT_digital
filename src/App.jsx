@@ -571,9 +571,9 @@ const Sidebar = ({ page, setPage, mobileOpen, setMobileOpen, notify }) => {
     <>
       {mobileOpen && <div className="fixed inset-0 z-30 lg:hidden" style={{ background: "rgba(12,33,54,0.45)" }} onClick={() => setMobileOpen(false)} />}
       <aside
-        className="fixed inset-y-0 left-0 z-40 flex w-64 flex-col transition-transform lg:static lg:translate-x-0"
-        style={{ background: C.navyDark, transform: mobileOpen ? "translateX(0)" : "translateX(-100%)" }}
-      >
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col transition-transform lg:static lg:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}
+        style={{ background: C.navyDark }}
+        >
         <div className="flex items-center gap-2.5 px-5 py-5">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: C.navyMid }}>
             <Building2 size={18} color="#fff" />
