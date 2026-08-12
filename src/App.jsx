@@ -1693,11 +1693,13 @@ const MAP_LAYERS = {
     label: "Peta Jalan",
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxNativeZoom: 19,
   },
   satelit: {
     label: "Citra Satelit",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    maxNativeZoom: 19,
   },
 };
 
@@ -1731,8 +1733,8 @@ const MapLocationPicker = ({ lat, lng, onChange }) => {
     <div>
       <div className="mb-2 flex justify-end"><MapLayerToggle layer={layer} setLayer={setLayer} /></div>
       <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 260 }}>
-        <MapContainer center={center} zoom={hasPoint ? 18 : 16} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
-          <TileLayer key={layer} attribution={MAP_LAYERS[layer].attribution} url={MAP_LAYERS[layer].url} />
+        <MapContainer center={center} zoom={hasPoint ? 19 : 17} maxZoom={21} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
+          <TileLayer key={layer} attribution={MAP_LAYERS[layer].attribution} url={MAP_LAYERS[layer].url} maxNativeZoom={MAP_LAYERS[layer].maxNativeZoom} />
           <MapAutoResize />
           <MapClickHandler onPick={(la, ln) => onChange(la.toFixed(6), ln.toFixed(6))} />
           {hasPoint && <Marker position={[Number(lat), Number(lng)]} icon={houseMarkerIcon(C.navy)} />}
@@ -1935,6 +1937,23 @@ const HouseholdDetail = ({ household, residents, onEdit, onAddResident, onEditRe
         </table>
       </div>
 
+      <div className="border-t pt-4" style={{ borderColor: C.border }}>
+        <h4 className="rtd-display mb-3 text-sm font-bold" style={{ color: C.text }}>Lokasi di Peta</h4>
+        {household.lat != null && household.lng != null && !Number.isNaN(Number(household.lat)) && !Number.isNaN(Number(household.lng)) ? (
+          <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 200 }}>
+            <MapContainer center={[Number(household.lat), Number(household.lng)]} zoom={19} maxZoom={21} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
+              <TileLayer attribution={MAP_LAYERS.satelit.attribution} url={MAP_LAYERS.satelit.url} maxNativeZoom={MAP_LAYERS.satelit.maxNativeZoom} />
+              <MapAutoResize />
+              <Marker position={[Number(household.lat), Number(household.lng)]} icon={houseMarkerIcon(C.navy)} />
+            </MapContainer>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-xs" style={{ background: C.orangeSoft, color: C.orange }}>
+            <Info size={13} /> Rumah ini belum punya titik lokasi. Klik "Edit Rumah" lalu tandai posisinya di peta.
+          </div>
+        )}
+      </div>
+
       <div className="flex justify-end border-t pt-4" style={{ borderColor: C.border }}>
         <Btn size="sm" variant="ghost" onClick={onEdit}><Pencil size={13} /> Edit Rumah</Btn>
       </div>
@@ -2090,9 +2109,9 @@ const FitBoundsToMarkers = ({ points }) => {
   useEffect(() => {
     if (points.length === 0) return;
     if (points.length === 1) {
-      map.setView(points[0], 17);
+      map.setView(points[0], 19);
     } else {
-      map.fitBounds(points, { padding: [32, 32], maxZoom: 18 });
+      map.fitBounds(points, { padding: [32, 32], maxZoom: 19 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length]);
@@ -2152,11 +2171,12 @@ const PetaRT = ({ households, residents, dues, onSelect }) => {
       )}
 
       <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${C.border}`, height: 480 }}>
-        <MapContainer center={points[0] || defaultCenter} zoom={17} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
+        <MapContainer center={points[0] || defaultCenter} zoom={19} maxZoom={21} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
           <TileLayer
             key={layer}
             attribution={MAP_LAYERS[layer].attribution}
             url={MAP_LAYERS[layer].url}
+            maxNativeZoom={MAP_LAYERS[layer].maxNativeZoom}
           />
           <MapAutoResize />
           <FitBoundsToMarkers points={points} />
