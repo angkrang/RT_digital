@@ -1873,8 +1873,117 @@ const HouseholdDetail = ({ household, residents, onEdit, onAddResident, onEditRe
 };
 
 /* -- DATA RUMAH PAGE -- */
-const DataRumahPage = ({ households, residents, onAddHousehold, onUpdateHousehold, onAddResident, onUpdateResident }) => {
+/* -- DENAH RT: peta skematik rumah per jalan, warna = status iuran periode terakhir -- */
+const parseStreetName = (address) => {
+  if (!address) return "Lainnya";
+  const idx = address.search(/No\.?\s*\d+/i);
+  const name = (idx > -1 ? address.slice(0, idx) : address).trim().replace(/,$/, "");
+  return name || "Lainnya";
+};
+
+const DENAH_STATUS_COLOR = { lunas: C.green, sebagian: C.orange, belum: C.red, none: "#C7CDD6" };
+const DENAH_STATUS_LABEL = { lunas: "Lunas", sebagian: "Sebagian", belum: "Belum Bayar", none: "Belum ada tagihan" };
+
+const LegendDot = ({ color, label }) => (
+  <span className="inline-flex items-center gap-1.5">
+    <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ background: color }} />
+    {label}
+  </span>
+);
+
+const HouseBlock = ({ household, headName, status, onClick }) => (
+  <button
+    onClick={onClick}
+    title={`Rumah No. ${household.house_number}${headName ? " — " + headName : ""} (${DENAH_STATUS_LABEL[status]})`}
+    className="rtd-focus flex w-[76px] flex-col items-center gap-1 rounded-lg border-2 bg-white px-2 py-2.5 text-center transition hover:-translate-y-0.5 hover:shadow-md"
+    style={{ borderColor: DENAH_STATUS_COLOR[status] }}
+  >
+    <Home size={16} style={{ color: DENAH_STATUS_COLOR[status] }} />
+    <span className="text-[11px] font-bold leading-tight" style={{ color: C.text }}>No. {household.house_number}</span>
+    <span className="truncate text-[9px] leading-tight" style={{ color: C.textFaint, maxWidth: "68px" }}>{headName || "—"}</span>
+  </button>
+);
+
+const DenahRT = ({ households, residents, dues, onSelect }) => {
+  const residentMap = useMemo(() => Object.fromEntries(residents.map((r) => [r.id, r])), [residents]);
+
+  const latestPeriod = useMemo(() => {
+    const periods = [...new Set(dues.map((d) => d.period))].sort();
+    return periods[periods.length - 1] || null;
+  }, [dues]);
+
+  const statusFor = (householdId) => {
+    if (!latestPeriod) return "none";
+    const rows = dues.filter((d) => d.household_id === householdId && d.period === latestPeriod);
+    if (rows.length === 0) return "none";
+    const total = rows.reduce((s, d) => s + Number(d.amount), 0);
+    const paid = rows.reduce((s, d) => s + Number(d.paid_amount), 0);
+    if (total === 0) return "none";
+    if (paid >= total) return "lunas";
+    if (paid > 0) return "sebagian";
+    return "belum";
+  };
+
+  const streets = useMemo(() => {
+    const map = {};
+    households.forEach((h) => { (map[parseStreetName(h.address)] ||= []).push(h); });
+    Object.values(map).forEach((list) =>
+      list.sort((a, b) => String(a.house_number).localeCompare(String(b.house_number), "id", { numeric: true }))
+    );
+    return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "id"));
+  }, [households]);
+
+  if (households.length === 0) {
+    return <EmptyState icon={MapPin} title="Belum ada data rumah" subtitle="Tambahkan data rumah untuk melihat denah RT." />;
+  }
+
+  return (
+    <div className="space-y-7">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg px-3.5 py-2.5 text-xs" style={{ background: C.navyFaint, color: C.navy }}>
+        <span className="font-semibold">
+          {latestPeriod ? `Status iuran periode ${formatPeriodLabel(latestPeriod)}:` : "Warna menunjukkan status iuran:"}
+        </span>
+        <LegendDot color={DENAH_STATUS_COLOR.lunas} label="Lunas" />
+        <LegendDot color={DENAH_STATUS_COLOR.sebagian} label="Sebagian" />
+        <LegendDot color={DENAH_STATUS_COLOR.belum} label="Belum Bayar" />
+        <LegendDot color={DENAH_STATUS_COLOR.none} label="Belum ada tagihan" />
+      </div>
+
+      {streets.map(([street, list]) => {
+        const kiri = list.filter((_, i) => i % 2 === 0);
+        const kanan = list.filter((_, i) => i % 2 === 1);
+        return (
+          <div key={street}>
+            <p className="rtd-display mb-3 flex items-center gap-1.5 text-sm font-bold" style={{ color: C.text }}>
+              <MapPin size={14} style={{ color: C.textMuted }} /> {street}
+            </p>
+            <div className="rounded-xl p-4" style={{ background: "#EEF1F5" }}>
+              <div className="flex flex-wrap gap-3 pb-3">
+                {kiri.map((h) => {
+                  const head = residentMap[h.head_resident_id];
+                  return <HouseBlock key={h.id} household={h} headName={head?.name} status={statusFor(h.id)} onClick={() => onSelect(h)} />;
+                })}
+              </div>
+              <div className="h-2 rounded-full" style={{ background: "#C7CDD6" }} />
+              {kanan.length > 0 && (
+                <div className="flex flex-wrap gap-3 pt-3">
+                  {kanan.map((h) => {
+                    const head = residentMap[h.head_resident_id];
+                    return <HouseBlock key={h.id} household={h} headName={head?.name} status={statusFor(h.id)} onClick={() => onSelect(h)} />;
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const DataRumahPage = ({ households, residents, dues, onAddHousehold, onUpdateHousehold, onAddResident, onUpdateResident }) => {
   const [search, setSearch] = useState("");
+  const [view, setView] = useState("grid"); // 'grid' | 'denah'
   const [modal, setModal] = useState(null); // { type: 'add' | 'edit' | 'detail', household? }
 
   const residentsByHousehold = useMemo(() => {
@@ -1906,13 +2015,33 @@ const DataRumahPage = ({ households, residents, onAddHousehold, onUpdateHousehol
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative sm:w-80">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.textFaint }} />
-            <TextInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari nomor rumah, nama, NIK, KK, HP..." className="pl-9" />
+            <TextInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari nomor rumah, nama, NIK, KK, HP..." className="pl-9" disabled={view === "denah"} />
           </div>
-          <Btn size="sm" onClick={() => setModal({ type: "add" })}><Plus size={14} /> Tambah Rumah</Btn>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-lg p-0.5" style={{ background: C.navyFaint }}>
+              <button
+                onClick={() => setView("grid")}
+                className="rtd-focus rounded-md px-3 py-1.5 text-xs font-semibold transition"
+                style={view === "grid" ? { background: C.card, color: C.navy, boxShadow: "0 1px 2px rgba(0,0,0,0.08)" } : { color: C.textMuted }}
+              >
+                Grid
+              </button>
+              <button
+                onClick={() => setView("denah")}
+                className="rtd-focus rounded-md px-3 py-1.5 text-xs font-semibold transition"
+                style={view === "denah" ? { background: C.card, color: C.navy, boxShadow: "0 1px 2px rgba(0,0,0,0.08)" } : { color: C.textMuted }}
+              >
+                <span className="inline-flex items-center gap-1"><MapPin size={12} /> Denah</span>
+              </button>
+            </div>
+            <Btn size="sm" onClick={() => setModal({ type: "add" })}><Plus size={14} /> Tambah Rumah</Btn>
+          </div>
         </div>
       </Card>
 
-      {sorted.length === 0 ? (
+      {view === "denah" ? (
+        <DenahRT households={households} residents={residents} dues={dues} onSelect={(h) => setModal({ type: "detail", household: h })} />
+      ) : sorted.length === 0 ? (
         <Card className="p-0"><EmptyState icon={Home} title="Belum ada data rumah" subtitle="Klik Tambah Rumah untuk mulai mendata." /></Card>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -3086,7 +3215,7 @@ export default function App() {
               <Info size={13} /> DATA DEMO — seluruh transaksi di bawah ini adalah data contoh untuk keperluan simulasi.
             </div>
             {page === "dashboard" && <Dashboard transactions={transactions} payments={payments} settings={settings} notify={dashboardNotify} />}
-            {page === "rumah" && <DataRumahPage households={households} residents={residents} onAddHousehold={handleAddHousehold} onUpdateHousehold={handleUpdateHousehold} onAddResident={handleAddResident} onUpdateResident={handleUpdateResident} />}
+            {page === "rumah" && <DataRumahPage households={households} residents={residents} dues={dues} onAddHousehold={handleAddHousehold} onUpdateHousehold={handleUpdateHousehold} onAddResident={handleAddResident} onUpdateResident={handleUpdateResident} />}
             {page === "warga" && <DataWargaPage households={households} residents={residents} onAddResident={handleAddResident} onUpdateResident={handleUpdateResident} />}
             {page === "kas" && <KasRT transactions={transactions} actions={actions} />}
             {page === "pemasukan" && <ListPage type="masuk" transactions={transactions} actions={actions} />}
