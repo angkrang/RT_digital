@@ -1,4 +1,4 @@
-export const API_URL = "https://script.google.com/macros/s/AKfycbyz23_NxLApSogfS_Cb9xemrddpD9P5f07dJnPSBl_lpdvKFmz7PC3BpnNMMmIDnELcgA/exec";
+export const API_URL = "https://script.google.com/macros/s/AKfycbx42a8dpsmKuL8QZPUKQ9LFj2HuzQvXeQ8_yVZMJrSkB5uMlZKTmwsDVA71SVI1-AFU/exec";
 
 export const API_TOKEN = "Mocacino3in1kopiku"; // harus SAMA PERSIS dengan API_TOKEN di Code.gs
 
