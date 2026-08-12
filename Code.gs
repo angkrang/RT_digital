@@ -41,6 +41,13 @@ const SHEET_NAMES = {
   RESIDENTS: "Residents",
   DUES_TYPES: "DuesTypes",
   DUES: "Dues",
+  // -- Batch 3B: Modul Arisan (terpisah dari sheet "Arisan" lama yang
+  // dipakai fitur undian sederhana di Pembayaran Warga / PublicHome,
+  // supaya tidak menimpa data yang sudah ada). --
+  ARISAN_GROUPS: "ArisanGroups",
+  ARISAN_PARTICIPANTS: "ArisanParticipants",
+  ARISAN_PAYMENTS: "ArisanPayments",
+  ARISAN_WINNERS: "ArisanWinners",
 };
 
 const TX_HEADERS = [
@@ -84,6 +91,20 @@ const DUES_HEADERS = [
   "status", "payment_date", "created_at", "updated_at",
 ];
 
+// -- Batch 3B: Modul Arisan --
+const ARISAN_GROUP_HEADERS = [
+  "id", "name", "amount", "frequency", "start_date", "end_date", "status",
+  "notes", "created_at", "updated_at",
+];
+const ARISAN_PARTICIPANT_HEADERS = ["id", "arisan_id", "household_id", "status", "joined_at"];
+const ARISAN_PAYMENT_HEADERS = [
+  "id", "arisan_id", "period", "household_id", "amount_due", "amount_paid",
+  "status", "payment_date", "notes", "created_at", "updated_at",
+];
+const ARISAN_WINNER_HEADERS = [
+  "id", "arisan_id", "period", "household_id", "amount", "date", "notes", "created_at",
+];
+
 /* ---------------------------------------------------------------------
    ENTRY POINTS
    --------------------------------------------------------------------- */
@@ -111,6 +132,18 @@ function doGet(e) {
     }
     if (action === "getJimpitanMonthlyRecap") {
       return jsonOut({ ok: true, data: getJimpitanMonthlyRecap_(e.parameter.month) });
+    }
+    if (action === "getArisans") {
+      return jsonOut({ ok: true, data: { arisanGroups: readAllArisanGroups_() } });
+    }
+    if (action === "getArisanParticipants") {
+      return jsonOut({ ok: true, data: { arisanParticipants: readAll_(SHEET_NAMES.ARISAN_PARTICIPANTS) } });
+    }
+    if (action === "getArisanPayments") {
+      return jsonOut({ ok: true, data: { arisanPayments: readAllArisanPayments_() } });
+    }
+    if (action === "getArisanWinners") {
+      return jsonOut({ ok: true, data: { arisanWinners: readAll_(SHEET_NAMES.ARISAN_WINNERS) } });
     }
     return jsonOut({ ok: false, error: "Unknown GET action: " + action });
   } catch (err) {
@@ -142,6 +175,13 @@ function doPost(e) {
       saveDuesTypes: apiSaveDuesTypes,
       generateDues: apiGenerateDues,
       recordPayment: apiRecordDuesPayment,
+      // -- Batch 3B: Modul Arisan --
+      addArisan: apiAddArisan,
+      updateArisan: apiUpdateArisan,
+      addArisanParticipant: apiAddArisanParticipant,
+      removeArisanParticipant: apiRemoveArisanParticipant,
+      recordArisanPayment: apiRecordArisanPayment,
+      recordArisanWinner: apiRecordArisanWinner,
     };
     const handler = handlers[action];
     if (!handler) return jsonOut({ ok: false, error: "Unknown POST action: " + action });
@@ -270,7 +310,38 @@ function bootstrap() {
     payment_date: d.payment_date ? normalizeDate_(d.payment_date) : null,
   }));
 
-  return { transactions, payments, jimpitan, arisanRiwayat, settings, households, residents, duesTypes, dues };
+  const arisanGroups = readAllArisanGroups_();
+  const arisanParticipants = readAll_(SHEET_NAMES.ARISAN_PARTICIPANTS);
+  const arisanPayments = readAllArisanPayments_();
+  const arisanWinners = readAll_(SHEET_NAMES.ARISAN_WINNERS).map((w) => ({
+    ...w,
+    amount: Number(w.amount) || 0,
+    date: w.date ? normalizeDate_(w.date) : "",
+  }));
+
+  return {
+    transactions, payments, jimpitan, arisanRiwayat, settings, households, residents, duesTypes, dues,
+    arisanGroups, arisanParticipants, arisanPayments, arisanWinners,
+  };
+}
+
+/* -- Batch 3B: Modul Arisan — helper baca data dengan tipe angka/tanggal yang benar -- */
+function readAllArisanGroups_() {
+  return readAll_(SHEET_NAMES.ARISAN_GROUPS).map((a) => ({
+    ...a,
+    amount: Number(a.amount) || 0,
+    start_date: a.start_date ? normalizeDate_(a.start_date) : "",
+    end_date: a.end_date ? normalizeDate_(a.end_date) : "",
+  }));
+}
+
+function readAllArisanPayments_() {
+  return readAll_(SHEET_NAMES.ARISAN_PAYMENTS).map((p) => ({
+    ...p,
+    amount_due: Number(p.amount_due) || 0,
+    amount_paid: Number(p.amount_paid) || 0,
+    payment_date: p.payment_date ? normalizeDate_(p.payment_date) : "",
+  }));
 }
 
 function nowIso_() {
@@ -566,6 +637,180 @@ function apiAddArisanWinner(payload) {
   const entry = { period: payload.period, winner_id: payload.winner_id };
   appendRow_(SHEET_NAMES.ARISAN, entry, ARISAN_HEADERS);
   return { arisan: entry };
+}
+
+/* ---------------------------------------------------------------------
+   BATCH 3B — MODUL ARISAN (kelola arisan, peserta, pembayaran, pemenang)
+   Catatan penting: pembayaran arisan TIDAK PERNAH otomatis membuat
+   transaksi Kas RT — dana arisan dicatat terpisah dari Kas RT.
+   --------------------------------------------------------------------- */
+function apiAddArisan(payload) {
+  const name = String(payload.name || "").trim();
+  if (!name) throw new Error("Nama arisan wajib diisi.");
+  const amount = Number(payload.amount) || 0;
+  if (amount <= 0) throw new Error("Nominal iuran harus lebih dari 0.");
+  const startDate = normalizeDate_(String(payload.start_date || "").trim());
+  if (!startDate) throw new Error("Tanggal mulai wajib diisi.");
+
+  const now = nowIso_();
+  const rec = {
+    id: "ar-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    name: name,
+    amount: amount,
+    frequency: payload.frequency || "Bulanan",
+    start_date: startDate,
+    end_date: payload.end_date ? normalizeDate_(String(payload.end_date).trim()) : "",
+    status: payload.status || "Aktif",
+    notes: payload.notes || "",
+    created_at: now,
+    updated_at: now,
+  };
+  appendRow_(SHEET_NAMES.ARISAN_GROUPS, rec, ARISAN_GROUP_HEADERS);
+  return { arisan: rec };
+}
+
+function apiUpdateArisan(payload) {
+  const sh = sheet_(SHEET_NAMES.ARISAN_GROUPS);
+  const rowIdx = findRowIndexById_(sh, ARISAN_GROUP_HEADERS, "id", payload.id);
+  if (rowIdx === -1) throw new Error("Arisan tidak ditemukan: " + payload.id);
+  const current = {};
+  const currentRow = sh.getRange(rowIdx, 1, 1, ARISAN_GROUP_HEADERS.length).getValues()[0];
+  ARISAN_GROUP_HEADERS.forEach((h, i) => (current[h] = currentRow[i]));
+
+  const merged = { ...current, ...payload, updated_at: nowIso_() };
+  merged.amount = Number(merged.amount) || 0;
+  merged.start_date = normalizeDate_(merged.start_date);
+  merged.end_date = merged.end_date ? normalizeDate_(merged.end_date) : "";
+
+  const row = ARISAN_GROUP_HEADERS.map((h) => (merged[h] === undefined || merged[h] === null ? "" : merged[h]));
+  sh.getRange(rowIdx, 1, 1, ARISAN_GROUP_HEADERS.length).setValues([row]);
+  return { arisan: merged };
+}
+
+/* -- Peserta — wajib berasal dari Master Data Rumah (household_id) -- */
+function apiAddArisanParticipant(payload) {
+  const arisanId = payload.arisan_id;
+  const householdId = payload.household_id;
+  if (!arisanId || !householdId) throw new Error("Arisan dan rumah wajib dipilih.");
+  const existing = readAll_(SHEET_NAMES.ARISAN_PARTICIPANTS);
+  const dup = existing.some(
+    (p) => String(p.arisan_id) === String(arisanId) && String(p.household_id) === String(householdId)
+  );
+  if (dup) throw new Error("Rumah ini sudah menjadi peserta arisan ini.");
+
+  const rec = {
+    id: "arp-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    arisan_id: arisanId,
+    household_id: householdId,
+    status: "Aktif",
+    joined_at: nowIso_(),
+  };
+  appendRow_(SHEET_NAMES.ARISAN_PARTICIPANTS, rec, ARISAN_PARTICIPANT_HEADERS);
+  return { participant: rec };
+}
+
+function apiRemoveArisanParticipant(payload) {
+  const sh = sheet_(SHEET_NAMES.ARISAN_PARTICIPANTS);
+  const rowIdx = findRowIndexById_(sh, ARISAN_PARTICIPANT_HEADERS, "id", payload.id);
+  if (rowIdx === -1) throw new Error("Peserta tidak ditemukan: " + payload.id);
+  sh.deleteRow(rowIdx);
+  return { removed: true, id: payload.id };
+}
+
+/* -- Pembayaran per periode — mendukung pembayaran sebagian, status
+   dihitung otomatis (Lunas / Sebagian / Belum). TIDAK membuat transaksi
+   Kas RT (lihat catatan di atas). -- */
+function computeArisanPaymentStatus_(due, paid) {
+  if (due > 0 && paid >= due) return "Lunas";
+  if (paid > 0) return "Sebagian";
+  return "Belum";
+}
+
+function apiRecordArisanPayment(payload) {
+  const arisanId = payload.arisan_id;
+  const period = String(payload.period || "").trim();
+  const householdId = payload.household_id;
+  const amount = Number(payload.amount) || 0;
+  if (!arisanId || !period || !householdId) throw new Error("Arisan, periode, dan rumah wajib diisi.");
+  if (amount <= 0) throw new Error("Nominal pembayaran harus lebih dari 0.");
+
+  const arisan = readAll_(SHEET_NAMES.ARISAN_GROUPS).find((a) => String(a.id) === String(arisanId));
+  if (!arisan) throw new Error("Arisan tidak ditemukan.");
+  const amountDue = Number(arisan.amount) || 0;
+  const date = normalizeDate_(String(payload.date || "").trim()) ||
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd");
+
+  const sh = sheet_(SHEET_NAMES.ARISAN_PAYMENTS);
+  const rows = readAll_(SHEET_NAMES.ARISAN_PAYMENTS);
+  const existing = rows.find(
+    (p) => String(p.arisan_id) === String(arisanId) && String(p.period) === period && String(p.household_id) === String(householdId)
+  );
+
+  if (existing) {
+    const rowIdx = findRowIndexById_(sh, ARISAN_PAYMENT_HEADERS, "id", existing.id);
+    const newPaid = (Number(existing.amount_paid) || 0) + amount;
+    const merged = {
+      ...existing,
+      amount_due: amountDue,
+      amount_paid: newPaid,
+      status: computeArisanPaymentStatus_(amountDue, newPaid),
+      payment_date: date,
+      notes: payload.notes || existing.notes || "",
+      updated_at: nowIso_(),
+    };
+    const row = ARISAN_PAYMENT_HEADERS.map((h) => (merged[h] === undefined || merged[h] === null ? "" : merged[h]));
+    sh.getRange(rowIdx, 1, 1, ARISAN_PAYMENT_HEADERS.length).setValues([row]);
+    return { payment: merged };
+  }
+
+  const now = nowIso_();
+  const rec = {
+    id: "arpay-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    arisan_id: arisanId,
+    period: period,
+    household_id: householdId,
+    amount_due: amountDue,
+    amount_paid: amount,
+    status: computeArisanPaymentStatus_(amountDue, amount),
+    payment_date: date,
+    notes: payload.notes || "",
+    created_at: now,
+    updated_at: now,
+  };
+  appendRow_(SHEET_NAMES.ARISAN_PAYMENTS, rec, ARISAN_PAYMENT_HEADERS);
+  return { payment: rec };
+}
+
+/* -- Pemenang — hanya pencatatan manual histori, TIDAK ADA undian/algoritma
+   otomatis. Satu pemenang per arisan per periode. --
+   Catatan penamaan: aksi ini dipanggil "recordArisanWinner" (bukan
+   "addArisanWinner") karena nama tersebut sudah dipakai fitur undian lama
+   (sheet "Arisan" / apiAddArisanWinner) yang tetap dipertahankan agar tidak
+   merusak fitur yang sudah berjalan. */
+function apiRecordArisanWinner(payload) {
+  const arisanId = payload.arisan_id;
+  const period = String(payload.period || "").trim();
+  const householdId = payload.household_id;
+  if (!arisanId || !period || !householdId) throw new Error("Arisan, periode, dan rumah pemenang wajib diisi.");
+
+  const existing = readAll_(SHEET_NAMES.ARISAN_WINNERS);
+  const dup = existing.some((w) => String(w.arisan_id) === String(arisanId) && String(w.period) === period);
+  if (dup) throw new Error("Pemenang untuk periode ini sudah tercatat.");
+
+  const now = nowIso_();
+  const rec = {
+    id: "arw-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    arisan_id: arisanId,
+    period: period,
+    household_id: householdId,
+    amount: Number(payload.amount) || 0,
+    date: normalizeDate_(String(payload.date || "").trim()) ||
+      Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd"),
+    notes: payload.notes || "",
+    created_at: now,
+  };
+  appendRow_(SHEET_NAMES.ARISAN_WINNERS, rec, ARISAN_WINNER_HEADERS);
+  return { winner: rec };
 }
 
 /* ---------------------------------------------------------------------
@@ -901,6 +1146,17 @@ function SETUP() {
   // -- Batch 3A: Jimpitan (memakai rumah dari Master Data di atas) --
   const jimpitanSheet = getOrCreateSheet_(ss, SHEET_NAMES.JIMPITAN, JIMPITAN_HEADERS);
   writeRows_(jimpitanSheet, JIMPITAN_HEADERS, buildDemoJimpitan_(households));
+
+  // -- Batch 3B: Modul Arisan (memakai rumah dari Master Data di atas) --
+  const demoArisan = buildDemoArisanModule_(households);
+  const arisanGroupsSheet = getOrCreateSheet_(ss, SHEET_NAMES.ARISAN_GROUPS, ARISAN_GROUP_HEADERS);
+  writeRows_(arisanGroupsSheet, ARISAN_GROUP_HEADERS, demoArisan.groups);
+  const arisanParticipantsSheet = getOrCreateSheet_(ss, SHEET_NAMES.ARISAN_PARTICIPANTS, ARISAN_PARTICIPANT_HEADERS);
+  writeRows_(arisanParticipantsSheet, ARISAN_PARTICIPANT_HEADERS, demoArisan.participants);
+  const arisanPaymentsSheet = getOrCreateSheet_(ss, SHEET_NAMES.ARISAN_PAYMENTS, ARISAN_PAYMENT_HEADERS);
+  writeRows_(arisanPaymentsSheet, ARISAN_PAYMENT_HEADERS, demoArisan.payments);
+  const arisanWinnersSheet = getOrCreateSheet_(ss, SHEET_NAMES.ARISAN_WINNERS, ARISAN_WINNER_HEADERS);
+  writeRows_(arisanWinnersSheet, ARISAN_WINNER_HEADERS, demoArisan.winners);
 
   SpreadsheetApp.getUi().alert(
     "Setup selesai! Semua sheet & data demo sudah dibuat. Sekarang lakukan Deploy > New deployment > Web app."
@@ -1244,4 +1500,81 @@ function buildDemoJimpitan_(households) {
   });
 
   return rows;
+}
+
+/* ---------------------------------------------------------------------
+   BATCH 3B — DATA DEMO: MODUL ARISAN
+   1 arisan aktif (20 rumah peserta), pembayaran periode Agustus 2026
+   dengan variasi Lunas / Sebagian / Belum, dan riwayat pemenang.
+   --------------------------------------------------------------------- */
+function buildDemoArisanModule_(households) {
+  const now = "2026-01-01T00:00:00";
+  const arisanId = "ar-demo-1";
+  const amount = 50000;
+
+  const groups = [{
+    id: arisanId,
+    name: "Arisan Warga 2026",
+    amount: amount,
+    frequency: "Bulanan",
+    start_date: "2026-01-01",
+    end_date: "2026-12-31",
+    status: "Aktif",
+    notes: "Arisan bulanan warga RT, satu rumah satu slot.",
+    created_at: now,
+    updated_at: now,
+  }];
+
+  const participants = households.map((h, i) => ({
+    id: "arp-demo-" + (i + 1),
+    arisan_id: arisanId,
+    household_id: h.id,
+    status: "Aktif",
+    joined_at: now,
+  }));
+
+  // Pembayaran periode berjalan (Agustus 2026): pola 0=Lunas,1=Sebagian,2=Belum
+  const payments = households.map((h, i) => {
+    const seed = i % 3;
+    const paid = seed === 0 ? amount : seed === 1 ? Math.round(amount * 0.5) : 0;
+    return {
+      id: "arpay-demo-" + (i + 1),
+      arisan_id: arisanId,
+      period: "2026-08",
+      household_id: h.id,
+      amount_due: amount,
+      amount_paid: paid,
+      status: computeArisanPaymentStatus_(amount, paid),
+      payment_date: paid > 0 ? "2026-08-" + String(3 + (i % 8)).padStart(2, "0") : "",
+      notes: "",
+      created_at: now,
+      updated_at: now,
+    };
+  });
+  // Sebagian besar rumah sudah lunas untuk beberapa periode sebelumnya,
+  // supaya ada riwayat pembayaran yang lebih dari satu bulan.
+  ["2026-06", "2026-07"].forEach((period, pIdx) => {
+    households.forEach((h, i) => {
+      payments.push({
+        id: "arpay-demo-" + period + "-" + (i + 1),
+        arisan_id: arisanId,
+        period: period,
+        household_id: h.id,
+        amount_due: amount,
+        amount_paid: amount,
+        status: "Lunas",
+        payment_date: period + "-" + String(5 + (i % 10)).padStart(2, "0"),
+        notes: "",
+        created_at: now,
+        updated_at: now,
+      });
+    });
+  });
+
+  const winners = [
+    { id: "arw-demo-1", arisan_id: arisanId, period: "2026-06", household_id: households[2].id, amount: amount * households.length, date: "2026-06-15", notes: "", created_at: now },
+    { id: "arw-demo-2", arisan_id: arisanId, period: "2026-07", household_id: households[7].id, amount: amount * households.length, date: "2026-07-16", notes: "", created_at: now },
+  ];
+
+  return { groups: groups, participants: participants, payments: payments, winners: winners };
 }
