@@ -3,7 +3,7 @@ import {
   AlertTriangle, Info,
 } from "lucide-react";
 import { apiGet, apiPost } from "./api/client";
-import { ArisanPage } from "./arisan/ArisanPage";
+import { ArisanModule } from "./arisan/ArisanModule";
 import { LoginPage } from "./auth/LoginPage";
 import { GlobalStyle } from "./components/GlobalStyle";
 import { Btn, Card, ConfirmDialog, Modal, Toasts } from "./components/ui";
@@ -38,6 +38,12 @@ export default function App() {
   const [payments, setPayments] = useState([]);
   const [jimpitan, setJimpitan] = useState([]);
   const [arisan, setArisan] = useState({ riwayat: [] });
+  // -- Batch 3B: Modul Arisan (baru, terpisah dari `arisan` di atas yang
+  // dipakai fitur undian lama / PublicHome) --
+  const [arisanGroups, setArisanGroups] = useState([]);
+  const [arisanParticipants, setArisanParticipants] = useState([]);
+  const [arisanPayments, setArisanPayments] = useState([]);
+  const [arisanWinners, setArisanWinners] = useState([]);
   const [households, setHouseholds] = useState([]);
   const [residents, setResidents] = useState([]);
   const [duesTypes, setDuesTypes] = useState([]);
@@ -65,6 +71,10 @@ export default function App() {
         setPayments(data.payments || []);
         setJimpitan(data.jimpitan || []);
         setArisan({ riwayat: data.arisanRiwayat || [] });
+        setArisanGroups(data.arisanGroups || []);
+        setArisanParticipants(data.arisanParticipants || []);
+        setArisanPayments(data.arisanPayments || []);
+        setArisanWinners(data.arisanWinners || []);
         setHouseholds(data.households || []);
         setResidents(data.residents || []);
         setDuesTypes(data.duesTypes || []);
@@ -216,6 +226,88 @@ export default function App() {
       notify(`${RESIDENT_MAP[winnerId].name} terpilih sebagai pemenang arisan periode ${ARISAN_PERIOD}.`);
     } catch (err) {
       notify(err.message || "Gagal menyimpan hasil undian arisan.", "error");
+    }
+  };
+
+  /* -- Batch 3B: Modul Arisan (baru) --
+     Catatan penting: pembayaran arisan TIDAK PERNAH otomatis dimasukkan
+     sebagai transaksi Kas RT — dana arisan dicatat terpisah. */
+  const handleAddArisan = async (form) => {
+    try {
+      const { arisan: saved } = await apiPost("addArisan", form);
+      setArisanGroups((prev) => [...prev, saved]);
+      notify(`Arisan "${saved.name}" berhasil dibuat.`);
+      return saved;
+    } catch (err) {
+      notify(err.message || "Gagal membuat arisan.", "error");
+      throw err;
+    }
+  };
+
+  const handleUpdateArisan = async (form) => {
+    try {
+      const { arisan: saved } = await apiPost("updateArisan", form);
+      setArisanGroups((prev) => prev.map((a) => (a.id === saved.id ? saved : a)));
+      notify("Arisan berhasil diperbarui.");
+      return saved;
+    } catch (err) {
+      notify(err.message || "Gagal memperbarui arisan.", "error");
+      throw err;
+    }
+  };
+
+  const handleAddArisanParticipant = async (arisanId, householdIds) => {
+    try {
+      const added = [];
+      for (const householdId of householdIds) {
+        // eslint-disable-next-line no-await-in-loop
+        const { participant } = await apiPost("addArisanParticipant", { arisan_id: arisanId, household_id: householdId });
+        added.push(participant);
+      }
+      setArisanParticipants((prev) => [...prev, ...added]);
+      notify(`${added.length} peserta berhasil ditambahkan.`);
+      return added;
+    } catch (err) {
+      notify(err.message || "Gagal menambahkan peserta arisan.", "error");
+      throw err;
+    }
+  };
+
+  const handleRemoveArisanParticipant = async (participant) => {
+    try {
+      await apiPost("removeArisanParticipant", { id: participant.id });
+      setArisanParticipants((prev) => prev.filter((p) => p.id !== participant.id));
+      notify("Peserta arisan berhasil dihapus.");
+    } catch (err) {
+      notify(err.message || "Gagal menghapus peserta arisan.", "error");
+      throw err;
+    }
+  };
+
+  const handleRecordArisanPayment = async (payload) => {
+    try {
+      const { payment } = await apiPost("recordArisanPayment", payload);
+      setArisanPayments((prev) => {
+        const exists = prev.some((p) => p.id === payment.id);
+        return exists ? prev.map((p) => (p.id === payment.id ? payment : p)) : [...prev, payment];
+      });
+      notify("Pembayaran arisan berhasil dicatat.");
+      return payment;
+    } catch (err) {
+      notify(err.message || "Gagal menyimpan pembayaran arisan.", "error");
+      throw err;
+    }
+  };
+
+  const handleAddArisanWinner = async (payload) => {
+    try {
+      const { winner } = await apiPost("recordArisanWinner", payload);
+      setArisanWinners((prev) => [...prev, winner]);
+      notify("Pemenang arisan berhasil dicatat.");
+      return winner;
+    } catch (err) {
+      notify(err.message || "Gagal menyimpan pemenang arisan.", "error");
+      throw err;
     }
   };
 
@@ -414,7 +506,22 @@ export default function App() {
             {page === "iuran" && <IuranWargaPage households={households} residents={residents} duesTypes={duesTypes} dues={dues} onGenerateDues={handleGenerateDues} onRecordPayment={handleRecordDuesPayment} onSaveDuesTypes={handleSaveDuesTypes} userRole={user.role} />}
             {page === "pembayaran" && <PembayaranWargaPage payments={payments} settings={settings} onRecordPayment={handleRecordPembayaran} />}
             {page === "jimpitan" && <JimpitanPage households={households} residents={residents} jimpitan={jimpitan} onAddJimpitan={handleAddJimpitan} onUpdateJimpitan={handleUpdateJimpitan} />}
-            {page === "arisan" && <ArisanPage arisan={arisan} payments={payments} settings={settings} onDraw={handleArisanDraw} goToPembayaran={() => setPage("pembayaran")} />}
+            {page === "arisan" && (
+              <ArisanModule
+                households={households}
+                residents={residents}
+                arisanGroups={arisanGroups}
+                arisanParticipants={arisanParticipants}
+                arisanPayments={arisanPayments}
+                arisanWinners={arisanWinners}
+                onAddArisan={handleAddArisan}
+                onUpdateArisan={handleUpdateArisan}
+                onAddArisanParticipant={handleAddArisanParticipant}
+                onRemoveArisanParticipant={handleRemoveArisanParticipant}
+                onRecordArisanPayment={handleRecordArisanPayment}
+                onAddArisanWinner={handleAddArisanWinner}
+              />
+            )}
             {page === "sosial" && <SosialPage transactions={transactions} onAddSosial={handleAddSosial} />}
             {page === "laporan" && <ReportPage transactions={transactions} />}
             {page === "pengaturan" && <PengaturanPage settings={settings} onSave={handleSaveSettings} userRole={user.role} />}
