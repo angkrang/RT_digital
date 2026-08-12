@@ -1688,18 +1688,24 @@ const RT_MAP_CENTER = [-7.674597, 110.344724]; // Gang Sempit, Sidomulyo, Trihar
    belum sesuai kondisi asli karena hasil kontribusi komunitas) dan "Citra
    Satelit" (foto udara asli dari Esri, gratis tanpa API key) supaya
    kondisi rumah/tanah sebenarnya tetap bisa dicek. -- */
+/* -- maxZoom WAJIB diset eksplisit di TileLayer: default bawaan Leaflet
+   untuk TileLayer adalah 18, lebih rendah dari maxZoom MapContainer (21).
+   Kalau tidak diset, begitu peta di-zoom melewati 18, GridLayer berhenti
+   me-render tile sama sekali sehingga layar peta terlihat blank/kosong. -- */
 const MAP_LAYERS = {
   jalan: {
     label: "Peta Jalan",
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxNativeZoom: 19,
+    maxZoom: 21,
   },
   satelit: {
     label: "Citra Satelit",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
     maxNativeZoom: 19,
+    maxZoom: 21,
   },
 };
 
@@ -1734,7 +1740,7 @@ const MapLocationPicker = ({ lat, lng, onChange }) => {
       <div className="mb-2 flex justify-end"><MapLayerToggle layer={layer} setLayer={setLayer} /></div>
       <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 260 }}>
         <MapContainer center={center} zoom={hasPoint ? 19 : 17} maxZoom={21} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
-          <TileLayer key={layer} attribution={MAP_LAYERS[layer].attribution} url={MAP_LAYERS[layer].url} maxNativeZoom={MAP_LAYERS[layer].maxNativeZoom} />
+          <TileLayer key={layer} attribution={MAP_LAYERS[layer].attribution} url={MAP_LAYERS[layer].url} maxNativeZoom={MAP_LAYERS[layer].maxNativeZoom} maxZoom={MAP_LAYERS[layer].maxZoom} />
           <MapAutoResize />
           <MapClickHandler onPick={(la, ln) => onChange(la.toFixed(6), ln.toFixed(6))} />
           {hasPoint && <Marker position={[Number(lat), Number(lng)]} icon={houseMarkerIcon(C.navy)} />}
@@ -1942,7 +1948,7 @@ const HouseholdDetail = ({ household, residents, onEdit, onAddResident, onEditRe
         {household.lat != null && household.lng != null && !Number.isNaN(Number(household.lat)) && !Number.isNaN(Number(household.lng)) ? (
           <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 200 }}>
             <MapContainer center={[Number(household.lat), Number(household.lng)]} zoom={19} maxZoom={21} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
-              <TileLayer attribution={MAP_LAYERS.satelit.attribution} url={MAP_LAYERS.satelit.url} maxNativeZoom={MAP_LAYERS.satelit.maxNativeZoom} />
+              <TileLayer attribution={MAP_LAYERS.satelit.attribution} url={MAP_LAYERS.satelit.url} maxNativeZoom={MAP_LAYERS.satelit.maxNativeZoom} maxZoom={MAP_LAYERS.satelit.maxZoom} />
               <MapAutoResize />
               <Marker position={[Number(household.lat), Number(household.lng)]} icon={houseMarkerIcon(C.navy)} />
             </MapContainer>
@@ -2177,6 +2183,7 @@ const PetaRT = ({ households, residents, dues, onSelect }) => {
             attribution={MAP_LAYERS[layer].attribution}
             url={MAP_LAYERS[layer].url}
             maxNativeZoom={MAP_LAYERS[layer].maxNativeZoom}
+            maxZoom={MAP_LAYERS[layer].maxZoom}
           />
           <MapAutoResize />
           <FitBoundsToMarkers points={points} />
