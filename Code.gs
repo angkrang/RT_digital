@@ -47,10 +47,23 @@ const TX_HEADERS = [
   "id", "transaction_code", "transaction_date", "type", "category",
   "description", "amount", "source", "payment_method", "attachment",
   "notes", "created_by",
+  // -- Batch 3A: Jimpitan (dan modul lain ke depannya) bisa melacak balik
+  // transaksi otomatis ke data sumbernya lewat dua kolom ini. --
+  "reference_type", "reference_id",
 ];
 const USER_HEADERS = ["email", "password", "role", "name"];
 const PAYMENT_HEADERS = ["id", "resident_id", "period", "paid_amount", "payment_date"];
-const JIMPITAN_HEADERS = ["id", "date", "resident_id", "amount", "collector"];
+// -- Batch 3A: Jimpitan sekarang memakai Master Data Rumah (household_id),
+// bukan lagi resident_id demo lama, dan punya status setoran + audit trail. --
+const JIMPITAN_HEADERS = [
+  "id", "date", "household_id", "amount", "status", "collector", "notes",
+  "created_by", "created_at", "updated_at",
+];
+const JIMPITAN_STATUS = {
+  SUDAH: "Sudah Setor",
+  BELUM: "Belum Setor",
+  TIDAK_ADA: "Tidak Ada di Rumah",
+};
 const ARISAN_HEADERS = ["period", "winner_id"];
 const SETTINGS_HEADERS = ["iuranAmount", "arisanAmount", "sosialWajibAmount"];
 
@@ -90,6 +103,15 @@ function doGet(e) {
     if (action === "getDues") {
       return jsonOut({ ok: true, data: { dues: readAll_(SHEET_NAMES.DUES), duesTypes: readAll_(SHEET_NAMES.DUES_TYPES) } });
     }
+    if (action === "getJimpitan") {
+      return jsonOut({ ok: true, data: { jimpitan: readAllJimpitan_() } });
+    }
+    if (action === "getJimpitanSummary") {
+      return jsonOut({ ok: true, data: getJimpitanSummary_(e.parameter.date, e.parameter.month) });
+    }
+    if (action === "getJimpitanMonthlyRecap") {
+      return jsonOut({ ok: true, data: getJimpitanMonthlyRecap_(e.parameter.month) });
+    }
     return jsonOut({ ok: false, error: "Unknown GET action: " + action });
   } catch (err) {
     return jsonOut({ ok: false, error: String(err) });
@@ -110,6 +132,7 @@ function doPost(e) {
       upsertPayment: apiUpsertPayment,
       saveSettings: apiSaveSettings,
       addJimpitan: apiAddJimpitan,
+      updateJimpitan: apiUpdateJimpitan,
       addArisanWinner: apiAddArisanWinner,
       // -- Phase 2: Master Data Warga + Iuran --
       addHousehold: apiAddHousehold,
@@ -217,11 +240,7 @@ function bootstrap() {
     paid_amount: Number(p.paid_amount) || 0,
     payment_date: p.payment_date ? normalizeDate_(p.payment_date) : null,
   }));
-  const jimpitan = readAll_(SHEET_NAMES.JIMPITAN).map((j) => ({
-    ...j,
-    date: normalizeDate_(j.date),
-    amount: Number(j.amount) || 0,
-  }));
+  const jimpitan = readAllJimpitan_();
   const arisanRiwayat = readAll_(SHEET_NAMES.ARISAN);
 
   const settingsRows = readAll_(SHEET_NAMES.SETTINGS);
@@ -353,19 +372,191 @@ function apiUpsertPayment(payload) {
 }
 
 /* ---------------------------------------------------------------------
-   JIMPITAN
+   JIMPITAN (Batch 3A)
+   Menggunakan Master Data Rumah (Households) yang sudah ada dari Batch 2.
+   Setoran berstatus "Sudah Setor" dengan nominal > 0 otomatis membuat
+   transaksi Pemasukan di Kas RT, dengan reference_type/reference_id yang
+   menunjuk balik ke baris Jimpitan terkait.
    --------------------------------------------------------------------- */
+function readAllJimpitan_() {
+  return readAll_(SHEET_NAMES.JIMPITAN).map((j) => ({
+    ...j,
+    date: normalizeDate_(j.date),
+    amount: Number(j.amount) || 0,
+  }));
+}
+
+function householdLabel_(householdId) {
+  const household = readAll_(SHEET_NAMES.HOUSEHOLDS).find((h) => String(h.id) === String(householdId));
+  const head = household
+    ? readAll_(SHEET_NAMES.RESIDENTS).find((r) => String(r.id) === String(household.head_resident_id))
+    : null;
+  const houseLabel = household ? household.house_number : "-";
+  const headName = head ? head.name : "";
+  return { houseLabel: houseLabel, headName: headName, label: "Rumah No. " + houseLabel + (headName ? " — " + headName : "") };
+}
+
+// Buat transaksi Pemasukan Kas RT untuk satu baris Jimpitan (dipanggil saat
+// tambah baru maupun saat status diubah menjadi "Sudah Setor").
+function createJimpitanTransaction_(jimpitanEntry) {
+  const info = householdLabel_(jimpitanEntry.household_id);
+  const txCode = generateTxCode_(jimpitanEntry.date);
+  const tx = {
+    id: "tx-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    transaction_code: txCode,
+    transaction_date: jimpitanEntry.date,
+    type: "masuk",
+    category: "Jimpitan",
+    description: "Jimpitan - " + info.label,
+    amount: Number(jimpitanEntry.amount) || 0,
+    source: info.label,
+    payment_method: "Tunai",
+    attachment: null,
+    notes: jimpitanEntry.notes || "",
+    created_by: jimpitanEntry.created_by || "",
+    reference_type: "JIMPITAN",
+    reference_id: jimpitanEntry.id,
+  };
+  appendRow_(SHEET_NAMES.TRANSACTIONS, tx, TX_HEADERS);
+  return tx;
+}
+
+function findJimpitanTransaction_(jimpitanId) {
+  return readAll_(SHEET_NAMES.TRANSACTIONS).find(
+    (t) => t.reference_type === "JIMPITAN" && String(t.reference_id) === String(jimpitanId)
+  );
+}
+
+function updateTransactionRecord_(tx) {
+  const sh = sheet_(SHEET_NAMES.TRANSACTIONS);
+  const rowIdx = findRowIndexById_(sh, TX_HEADERS, "id", tx.id);
+  if (rowIdx === -1) return null;
+  const row = TX_HEADERS.map((h) => (tx[h] === undefined || tx[h] === null ? "" : tx[h]));
+  sh.getRange(rowIdx, 1, 1, TX_HEADERS.length).setValues([row]);
+  return tx;
+}
+
 function apiAddJimpitan(payload) {
-  const id = "jmp-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6);
+  const date = normalizeDate_(String(payload.date || "").trim());
+  const householdId = payload.household_id;
+  if (!date) throw new Error("Tanggal wajib diisi.");
+  if (!householdId) throw new Error("Rumah wajib dipilih.");
+  const status = payload.status || JIMPITAN_STATUS.BELUM;
+  const amount = status === JIMPITAN_STATUS.SUDAH ? (Number(payload.amount) || 0) : 0;
+
+  // -- Anti duplikasi: kombinasi tanggal + rumah --
+  const existing = readAll_(SHEET_NAMES.JIMPITAN);
+  const isDuplicate = existing.some(
+    (j) => normalizeDate_(j.date) === date && String(j.household_id) === String(householdId)
+  );
+  if (isDuplicate && !payload.force) {
+    throw new Error("DUPLICATE: Rumah ini sudah memiliki pencatatan jimpitan pada tanggal tersebut.");
+  }
+
+  const now = nowIso_();
   const entry = {
-    id: id,
-    date: payload.date,
-    resident_id: payload.resident_id,
-    amount: Number(payload.amount) || 0,
+    id: "jmp-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    date: date,
+    household_id: householdId,
+    amount: amount,
+    status: status,
     collector: payload.collector || "",
+    notes: payload.notes || "",
+    created_by: payload.created_by || "",
+    created_at: now,
+    updated_at: now,
   };
   appendRow_(SHEET_NAMES.JIMPITAN, entry, JIMPITAN_HEADERS);
-  return { jimpitan: entry };
+
+  let transaction = null;
+  if (status === JIMPITAN_STATUS.SUDAH && amount > 0) {
+    transaction = createJimpitanTransaction_(entry);
+  }
+
+  return { jimpitan: entry, transaction: transaction };
+}
+
+function apiUpdateJimpitan(payload) {
+  const sh = sheet_(SHEET_NAMES.JIMPITAN);
+  const rowIdx = findRowIndexById_(sh, JIMPITAN_HEADERS, "id", payload.id);
+  if (rowIdx === -1) throw new Error("Data jimpitan tidak ditemukan: " + payload.id);
+  const current = {};
+  const currentRow = sh.getRange(rowIdx, 1, 1, JIMPITAN_HEADERS.length).getValues()[0];
+  JIMPITAN_HEADERS.forEach((h, i) => (current[h] = currentRow[i]));
+
+  const merged = { ...current, ...payload, updated_at: nowIso_() };
+  if (merged.status !== JIMPITAN_STATUS.SUDAH) merged.amount = 0;
+  merged.amount = Number(merged.amount) || 0;
+  merged.date = normalizeDate_(merged.date);
+
+  const row = JIMPITAN_HEADERS.map((h) => (merged[h] === undefined || merged[h] === null ? "" : merged[h]));
+  sh.getRange(rowIdx, 1, 1, JIMPITAN_HEADERS.length).setValues([row]);
+
+  // Selaraskan transaksi Kas RT terkait (buat baru / perbarui / tidak ada
+  // perubahan), tanpa pernah menghapus transaksi lama begitu saja.
+  let transaction = findJimpitanTransaction_(merged.id) || null;
+  if (merged.status === JIMPITAN_STATUS.SUDAH && merged.amount > 0) {
+    if (transaction) {
+      const info = householdLabel_(merged.household_id);
+      transaction = updateTransactionRecord_({
+        ...transaction,
+        transaction_date: merged.date,
+        amount: merged.amount,
+        description: "Jimpitan - " + info.label,
+        source: info.label,
+        notes: merged.notes || "",
+      });
+    } else {
+      transaction = createJimpitanTransaction_(merged);
+    }
+  }
+
+  return { jimpitan: merged, transaction: transaction };
+}
+
+/* -- Statistik dashboard & rekap bulanan (dihitung juga di frontend dari
+   data bootstrap; endpoint ini disediakan untuk akses langsung/laporan.) -- */
+function getJimpitanSummary_(dateStr, monthStr) {
+  const rows = readAllJimpitan_();
+  const households = readAll_(SHEET_NAMES.HOUSEHOLDS).filter(
+    (h) => String(h.status) !== "Pindah" && String(h.status) !== "Nonaktif"
+  );
+  const today = dateStr || Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd");
+  const month = monthStr || today.slice(0, 7);
+
+  const sudahHariIni = rows.filter((j) => j.date === today && j.status === JIMPITAN_STATUS.SUDAH);
+  const sudahBulanIni = rows.filter((j) => j.date.slice(0, 7) === month && j.status === JIMPITAN_STATUS.SUDAH);
+  const setorSet = new Set(sudahBulanIni.map((j) => j.household_id));
+
+  return {
+    date: today,
+    month: month,
+    jimpitanHariIni: sudahHariIni.reduce((s, j) => s + j.amount, 0),
+    jimpitanBulanIni: sudahBulanIni.reduce((s, j) => s + j.amount, 0),
+    rumahSudahSetor: households.filter((h) => setorSet.has(h.id)).length,
+    rumahBelumSetor: households.length - households.filter((h) => setorSet.has(h.id)).length,
+  };
+}
+
+function getJimpitanMonthlyRecap_(monthStr) {
+  const rows = readAllJimpitan_();
+  const households = readAll_(SHEET_NAMES.HOUSEHOLDS);
+  const residents = readAll_(SHEET_NAMES.RESIDENTS);
+  const residentMap = {};
+  residents.forEach((r) => (residentMap[r.id] = r));
+  const month = monthStr || Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM");
+
+  return households.map((h) => {
+    const entries = rows.filter((j) => j.household_id === h.id && j.date.slice(0, 7) === month && j.status === JIMPITAN_STATUS.SUDAH);
+    const head = residentMap[h.head_resident_id];
+    return {
+      household_id: h.id,
+      house_number: h.house_number,
+      head_name: head ? head.name : "-",
+      jumlah_setoran: entries.length,
+      total: entries.reduce((s, j) => s + j.amount, 0),
+    };
+  });
 }
 
 /* ---------------------------------------------------------------------
@@ -685,9 +876,6 @@ function SETUP() {
   const paymentsSheet = getOrCreateSheet_(ss, SHEET_NAMES.PAYMENTS, PAYMENT_HEADERS);
   writeRows_(paymentsSheet, PAYMENT_HEADERS, buildDemoPayments_());
 
-  const jimpitanSheet = getOrCreateSheet_(ss, SHEET_NAMES.JIMPITAN, JIMPITAN_HEADERS);
-  writeRows_(jimpitanSheet, JIMPITAN_HEADERS, buildDemoJimpitan_());
-
   const arisanSheet = getOrCreateSheet_(ss, SHEET_NAMES.ARISAN, ARISAN_HEADERS);
   writeRows_(arisanSheet, ARISAN_HEADERS, [
     { period: "2026-05", winner_id: "r3" },
@@ -709,6 +897,10 @@ function SETUP() {
 
   const duesSheet = getOrCreateSheet_(ss, SHEET_NAMES.DUES, DUES_HEADERS);
   writeRows_(duesSheet, DUES_HEADERS, buildDemoDues_(households, duesTypes));
+
+  // -- Batch 3A: Jimpitan (memakai rumah dari Master Data di atas) --
+  const jimpitanSheet = getOrCreateSheet_(ss, SHEET_NAMES.JIMPITAN, JIMPITAN_HEADERS);
+  writeRows_(jimpitanSheet, JIMPITAN_HEADERS, buildDemoJimpitan_(households));
 
   SpreadsheetApp.getUi().alert(
     "Setup selesai! Semua sheet & data demo sudah dibuat. Sekarang lakukan Deploy > New deployment > Web app."
@@ -1004,30 +1196,52 @@ function buildDemoDues_(households, duesTypes) {
   });
 }
 
-function buildDemoJimpitan_() {
-  const ids = demoResidentIds_();
+function buildDemoJimpitan_(households) {
   const petugas = ["Bpk. Slamet", "Bpk. Rohman", "Ibu Yanti"];
+  const statusCycle = [
+    JIMPITAN_STATUS.SUDAH, JIMPITAN_STATUS.SUDAH, JIMPITAN_STATUS.SUDAH,
+    JIMPITAN_STATUS.BELUM, JIMPITAN_STATUS.TIDAK_ADA,
+  ];
+  const now = "2026-08-01T00:00:00";
+  const createdBy = "Ibu Wulan Ningsih";
   const rows = [];
   let n = 1;
-  ids.forEach((id, i) => {
-    if (i % 4 !== 3) {
-      rows.push({
-        id: "jmp-" + n++,
-        date: "2026-08-" + String(2 + (i % 9)).padStart(2, "0"),
-        resident_id: id,
-        amount: i % 2 === 0 ? 5000 : 10000,
-        collector: petugas[i % petugas.length],
-      });
-    }
-  });
-  ids.slice(0, 12).forEach((id, i) => {
+
+  const pushRow = (h, date, status, amount, i) => {
     rows.push({
       id: "jmp-" + n++,
-      date: "2026-07-" + String(18 + (i % 10)).padStart(2, "0"),
-      resident_id: id,
-      amount: 5000,
+      date: date,
+      household_id: h.id,
+      amount: status === JIMPITAN_STATUS.SUDAH ? amount : 0,
+      status: status,
       collector: petugas[i % petugas.length],
+      notes: "",
+      created_by: createdBy,
+      created_at: now,
+      updated_at: now,
     });
+  };
+
+  // Setoran bulan Agustus 2026 (bulan berjalan), sebagian besar rumah
+  // sudah setor, sebagian belum, agar statistik dashboard tidak kosong.
+  households.forEach((h, i) => {
+    const status = statusCycle[i % statusCycle.length];
+    const date = "2026-08-" + String(2 + (i % 9)).padStart(2, "0");
+    pushRow(h, date, status, i % 2 === 0 ? 5000 : 10000, i);
   });
+
+  // Beberapa setoran tertanggal hari ini (11 Agustus 2026) supaya kartu
+  // "Jimpitan Hari Ini" pada dashboard punya data.
+  households.slice(0, 8).forEach((h, i) => {
+    const status = i === 7 ? JIMPITAN_STATUS.BELUM : JIMPITAN_STATUS.SUDAH;
+    pushRow(h, "2026-08-11", status, i % 2 === 0 ? 5000 : 10000, i);
+  });
+
+  // Riwayat bulan Juli 2026 untuk mengisi filter bulan & rekap bulan lalu.
+  households.slice(0, 12).forEach((h, i) => {
+    const date = "2026-07-" + String(18 + (i % 10)).padStart(2, "0");
+    pushRow(h, date, JIMPITAN_STATUS.SUDAH, 5000, i);
+  });
+
   return rows;
 }
