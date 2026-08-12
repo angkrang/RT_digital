@@ -452,10 +452,18 @@ export default function App() {
     return (
       <div className="rtd-root flex min-h-screen items-center justify-center px-4" style={{ background: C.bg }}>
         <GlobalStyle />
-        <Card className="max-w-sm p-6 text-center">
+        <Card className="max-w-md p-6 text-center">
           <AlertTriangle size={22} style={{ color: C.red, margin: "0 auto" }} />
           <p className="mt-3 text-sm font-semibold" style={{ color: C.text }}>Gagal memuat data</p>
           <p className="mt-1 text-xs" style={{ color: C.textMuted }}>{loadError}</p>
+          <div className="mt-3 rounded-lg px-3 py-2 text-left text-xs" style={{ background: C.orangeSoft, color: C.orange }}>
+            <p className="font-semibold mb-1">Langkah perbaikan:</p>
+            <ol className="list-decimal list-inside space-y-1">
+              <li>Buka Google Apps Script dan deploy ulang sebagai <em>Web app</em></li>
+              <li>Salin URL deployment baru (diakhiri <code>/exec</code>)</li>
+              <li>Tempel URL tersebut ke variabel <code>API_URL</code> di <code>src/api/client.js</code></li>
+            </ol>
+          </div>
           <Btn className="mt-4 w-full" onClick={loadFromSheet}>Coba Lagi</Btn>
         </Card>
       </div>
