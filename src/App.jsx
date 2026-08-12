@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import {
@@ -1682,6 +1682,34 @@ const AdminStatsBar = ({ households, residents }) => {
 };
 
 /* -- Form Tambah/Edit Rumah -- */
+const RT_MAP_CENTER = [-7.674597, 110.344724]; // Gang Sempit, Sidomulyo, Triharjo, Sleman
+
+/* -- Klik-pilih lokasi di peta (pengganti input lat/lng manual) -- */
+const MapClickHandler = ({ onPick }) => {
+  useMapEvents({ click(e) { onPick(e.latlng.lat, e.latlng.lng); } });
+  return null;
+};
+
+const MapLocationPicker = ({ lat, lng, onChange }) => {
+  const hasPoint = lat !== "" && lat != null && lng !== "" && lng != null && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng));
+  const center = hasPoint ? [Number(lat), Number(lng)] : RT_MAP_CENTER;
+  return (
+    <div>
+      <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 260 }}>
+        <MapContainer center={center} zoom={hasPoint ? 18 : 16} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
+          <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <MapClickHandler onPick={(la, ln) => onChange(la.toFixed(6), ln.toFixed(6))} />
+          {hasPoint && <Marker position={[Number(lat), Number(lng)]} icon={houseMarkerIcon(C.navy)} />}
+        </MapContainer>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-xs" style={{ color: C.textMuted }}>
+        <span className="flex items-center gap-1.5"><MapPin size={12} />{hasPoint ? `Titik dipilih: ${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}` : "Klik pada peta untuk menandai lokasi rumah"}</span>
+        {hasPoint && <button type="button" onClick={() => onChange("", "")} className="rtd-focus font-semibold underline" style={{ color: C.red }}>Hapus titik</button>}
+      </div>
+    </div>
+  );
+};
+
 const HouseholdForm = ({ initial, residents, onCancel, onSubmit }) => {
   const [form, setForm] = useState(initial || { house_number: "", address: "", status: "Aktif", notes: "", lat: "", lng: "" });
   const [error, setError] = useState("");
@@ -1714,11 +1742,8 @@ const HouseholdForm = ({ initial, residents, onCancel, onSubmit }) => {
           {HOUSEHOLD_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
         </Select>
       </Field>
-      <Field label="Koordinat Peta (opsional)" hint="Isi jika ingin rumah ini muncul di posisi asli pada tab Peta">
-        <div className="grid grid-cols-2 gap-3">
-          <TextInput value={form.lat} onChange={(e) => set("lat", e.target.value)} placeholder="Latitude, mis. -7.674597" />
-          <TextInput value={form.lng} onChange={(e) => set("lng", e.target.value)} placeholder="Longitude, mis. 110.344724" />
-        </div>
+      <Field label="Lokasi di Peta (opsional)" hint="Klik pada peta untuk menandai posisi rumah ini">
+        <MapLocationPicker lat={form.lat} lng={form.lng} onChange={(lat, lng) => setForm((f) => ({ ...f, lat, lng }))} />
       </Field>
       <Field label="Catatan">
         <TextArea value={form.notes} onChange={(e) => set("notes", e.target.value)} rows={2} />
@@ -2039,7 +2064,7 @@ const PetaRT = ({ households, residents, dues, onSelect }) => {
   const withCoords = households.filter((h) => h.lat != null && h.lng != null && !Number.isNaN(Number(h.lat)) && !Number.isNaN(Number(h.lng)));
   const withoutCoords = households.filter((h) => !(h.lat != null && h.lng != null && !Number.isNaN(Number(h.lat)) && !Number.isNaN(Number(h.lng))));
   const points = withCoords.map((h) => [Number(h.lat), Number(h.lng)]);
-  const defaultCenter = [-7.674597, 110.344724]; // fallback: Gang Sempit, Sidomulyo, Triharjo, Sleman
+  const defaultCenter = RT_MAP_CENTER;
 
   if (households.length === 0) {
     return <EmptyState icon={MapPin} title="Belum ada data rumah" subtitle="Tambahkan data rumah untuk melihat peta RT." />;
@@ -2198,7 +2223,7 @@ const DataRumahPage = ({ households, residents, dues, onAddHousehold, onUpdateHo
       )}
 
       {modal?.type === "add" && (
-        <Modal title="Tambah Rumah" subtitle="Data rumah menjadi induk untuk anggota keluarga" onClose={() => setModal(null)} width={480}>
+        <Modal title="Tambah Rumah" subtitle="Data rumah menjadi induk untuk anggota keluarga" onClose={() => setModal(null)} width={560}>
           <HouseholdForm
             residents={residents}
             onCancel={() => setModal(null)}
@@ -2208,7 +2233,7 @@ const DataRumahPage = ({ households, residents, dues, onAddHousehold, onUpdateHo
       )}
 
       {modal?.type === "edit" && (
-        <Modal title="Edit Rumah" subtitle={`Rumah No. ${modal.household.house_number}`} onClose={() => setModal(null)} width={480}>
+        <Modal title="Edit Rumah" subtitle={`Rumah No. ${modal.household.house_number}`} onClose={() => setModal(null)} width={560}>
           <HouseholdForm
             initial={modal.household}
             residents={residents}
