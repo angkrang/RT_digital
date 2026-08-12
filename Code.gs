@@ -36,6 +36,11 @@ const SHEET_NAMES = {
   JIMPITAN: "Jimpitan",
   ARISAN: "Arisan",
   SETTINGS: "Settings",
+  // -- Phase 2: Master Data Warga + Iuran --
+  HOUSEHOLDS: "Households",
+  RESIDENTS: "Residents",
+  DUES_TYPES: "DuesTypes",
+  DUES: "Dues",
 };
 
 const TX_HEADERS = [
@@ -49,6 +54,23 @@ const JIMPITAN_HEADERS = ["id", "date", "resident_id", "amount", "collector"];
 const ARISAN_HEADERS = ["period", "winner_id"];
 const SETTINGS_HEADERS = ["iuranAmount", "arisanAmount", "sosialWajibAmount"];
 
+// -- Phase 2: Master Data Warga + Iuran --
+const HOUSEHOLD_HEADERS = [
+  "id", "house_number", "address", "head_resident_id", "status", "notes",
+  "lat", "lng",
+  "created_at", "updated_at",
+];
+const RESIDENT_HEADERS = [
+  "id", "household_id", "nik", "kk_number", "name", "gender", "birth_place",
+  "birth_date", "phone", "relationship", "occupation", "resident_status",
+  "created_at", "updated_at",
+];
+const DUES_TYPE_HEADERS = ["id", "name", "amount", "active"];
+const DUES_HEADERS = [
+  "id", "household_id", "dues_type_id", "period", "amount", "paid_amount",
+  "status", "payment_date", "created_at", "updated_at",
+];
+
 /* ---------------------------------------------------------------------
    ENTRY POINTS
    --------------------------------------------------------------------- */
@@ -58,6 +80,15 @@ function doGet(e) {
     const action = e.parameter.action;
     if (action === "bootstrap") {
       return jsonOut({ ok: true, data: bootstrap() });
+    }
+    if (action === "getHouseholds") {
+      return jsonOut({ ok: true, data: { households: readAll_(SHEET_NAMES.HOUSEHOLDS) } });
+    }
+    if (action === "getResidents") {
+      return jsonOut({ ok: true, data: { residents: readAll_(SHEET_NAMES.RESIDENTS) } });
+    }
+    if (action === "getDues") {
+      return jsonOut({ ok: true, data: { dues: readAll_(SHEET_NAMES.DUES), duesTypes: readAll_(SHEET_NAMES.DUES_TYPES) } });
     }
     return jsonOut({ ok: false, error: "Unknown GET action: " + action });
   } catch (err) {
@@ -80,6 +111,14 @@ function doPost(e) {
       saveSettings: apiSaveSettings,
       addJimpitan: apiAddJimpitan,
       addArisanWinner: apiAddArisanWinner,
+      // -- Phase 2: Master Data Warga + Iuran --
+      addHousehold: apiAddHousehold,
+      updateHousehold: apiUpdateHousehold,
+      addResident: apiAddResident,
+      updateResident: apiUpdateResident,
+      saveDuesTypes: apiSaveDuesTypes,
+      generateDues: apiGenerateDues,
+      recordPayment: apiRecordDuesPayment,
     };
     const handler = handlers[action];
     if (!handler) return jsonOut({ ok: false, error: "Unknown POST action: " + action });
@@ -194,7 +233,29 @@ function bootstrap() {
       }
     : { iuranAmount: 150000, arisanAmount: 100000, sosialWajibAmount: 20000 };
 
-  return { transactions, payments, jimpitan, arisanRiwayat, settings };
+  const households = readAll_(SHEET_NAMES.HOUSEHOLDS).map((h) => ({
+    ...h,
+    lat: h.lat === "" || h.lat === undefined ? null : Number(h.lat),
+    lng: h.lng === "" || h.lng === undefined ? null : Number(h.lng),
+  }));
+  const residents = readAll_(SHEET_NAMES.RESIDENTS);
+  const duesTypes = readAll_(SHEET_NAMES.DUES_TYPES).map((d) => ({
+    ...d,
+    amount: Number(d.amount) || 0,
+    active: !(d.active === false || d.active === "FALSE" || d.active === "false"),
+  }));
+  const dues = readAll_(SHEET_NAMES.DUES).map((d) => ({
+    ...d,
+    amount: Number(d.amount) || 0,
+    paid_amount: Number(d.paid_amount) || 0,
+    payment_date: d.payment_date ? normalizeDate_(d.payment_date) : null,
+  }));
+
+  return { transactions, payments, jimpitan, arisanRiwayat, settings, households, residents, duesTypes, dues };
+}
+
+function nowIso_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd'T'HH:mm:ss");
 }
 
 /* ---------------------------------------------------------------------
@@ -335,6 +396,272 @@ function apiSaveSettings(payload) {
   return { settings: settings };
 }
 
+/* ---------------------------------------------------------------------
+   PHASE 2 — MASTER DATA RUMAH (Households)
+   --------------------------------------------------------------------- */
+function apiAddHousehold(payload) {
+  const houseNumber = String(payload.house_number || "").trim();
+  if (!houseNumber) throw new Error("Nomor rumah wajib diisi.");
+  const existing = readAll_(SHEET_NAMES.HOUSEHOLDS);
+  if (existing.some((h) => String(h.house_number).trim() === houseNumber)) {
+    throw new Error("Nomor rumah " + houseNumber + " sudah terdaftar.");
+  }
+  const now = nowIso_();
+  const rec = {
+    id: "h-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    house_number: houseNumber,
+    address: payload.address || "",
+    head_resident_id: payload.head_resident_id || "",
+    status: payload.status || "Aktif",
+    notes: payload.notes || "",
+    lat: payload.lat || "",
+    lng: payload.lng || "",
+    created_at: now,
+    updated_at: now,
+  };
+  appendRow_(SHEET_NAMES.HOUSEHOLDS, rec, HOUSEHOLD_HEADERS);
+  return { household: rec };
+}
+
+function apiUpdateHousehold(payload) {
+  const sh = sheet_(SHEET_NAMES.HOUSEHOLDS);
+  const rowIdx = findRowIndexById_(sh, HOUSEHOLD_HEADERS, "id", payload.id);
+  if (rowIdx === -1) throw new Error("Data rumah tidak ditemukan: " + payload.id);
+  if (payload.house_number) {
+    const houseNumber = String(payload.house_number).trim();
+    const existing = readAll_(SHEET_NAMES.HOUSEHOLDS);
+    if (existing.some((h) => String(h.house_number).trim() === houseNumber && String(h.id) !== String(payload.id))) {
+      throw new Error("Nomor rumah " + houseNumber + " sudah dipakai rumah lain.");
+    }
+  }
+  const current = {};
+  const currentRow = sh.getRange(rowIdx, 1, 1, HOUSEHOLD_HEADERS.length).getValues()[0];
+  HOUSEHOLD_HEADERS.forEach((h, i) => (current[h] = currentRow[i]));
+  const merged = { ...current, ...payload, updated_at: nowIso_() };
+  const row = HOUSEHOLD_HEADERS.map((h) => (merged[h] === undefined || merged[h] === null ? "" : merged[h]));
+  sh.getRange(rowIdx, 1, 1, HOUSEHOLD_HEADERS.length).setValues([row]);
+  return { household: merged };
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — MASTER DATA WARGA (Residents)
+   --------------------------------------------------------------------- */
+function validateResidentPayload_(payload, excludeId) {
+  const name = String(payload.name || "").trim();
+  if (!name) throw new Error("Nama warga wajib diisi.");
+  if (!payload.household_id) throw new Error("Rumah wajib dipilih.");
+  const nik = String(payload.nik || "").trim();
+  if (!/^\d{16}$/.test(nik)) throw new Error("NIK harus berupa 16 digit angka.");
+  const kk = String(payload.kk_number || "").trim();
+  if (kk && !/^\d{16}$/.test(kk)) throw new Error("Nomor KK harus berupa 16 digit angka.");
+  const existing = readAll_(SHEET_NAMES.RESIDENTS);
+  const dup = existing.some((r) => String(r.nik) === nik && String(r.id) !== String(excludeId || ""));
+  if (dup) throw new Error("NIK " + nik + " sudah terdaftar untuk warga lain.");
+  return { name, nik, kk };
+}
+
+function apiAddResident(payload) {
+  const { name, nik, kk } = validateResidentPayload_(payload, null);
+  const now = nowIso_();
+  const rec = {
+    id: "res-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    household_id: payload.household_id,
+    nik: nik,
+    kk_number: kk,
+    name: name,
+    gender: payload.gender || "",
+    birth_place: payload.birth_place || "",
+    birth_date: payload.birth_date || "",
+    phone: payload.phone || "",
+    relationship: payload.relationship || "",
+    occupation: payload.occupation || "",
+    resident_status: payload.resident_status || "Tetap",
+    created_at: now,
+    updated_at: now,
+  };
+  appendRow_(SHEET_NAMES.RESIDENTS, rec, RESIDENT_HEADERS);
+
+  // Jika ini anggota pertama & rumah belum punya kepala keluarga, jadikan
+  // warga ini kepala keluarga secara otomatis.
+  if (String(rec.relationship).toLowerCase() === "kepala keluarga") {
+    const hh = sheet_(SHEET_NAMES.HOUSEHOLDS);
+    const rowIdx = findRowIndexById_(hh, HOUSEHOLD_HEADERS, "id", payload.household_id);
+    if (rowIdx !== -1) {
+      const headCol = HOUSEHOLD_HEADERS.indexOf("head_resident_id") + 1;
+      hh.getRange(rowIdx, headCol).setValue(rec.id);
+      const updCol = HOUSEHOLD_HEADERS.indexOf("updated_at") + 1;
+      hh.getRange(rowIdx, updCol).setValue(nowIso_());
+    }
+  }
+  return { resident: rec };
+}
+
+function apiUpdateResident(payload) {
+  const sh = sheet_(SHEET_NAMES.RESIDENTS);
+  const rowIdx = findRowIndexById_(sh, RESIDENT_HEADERS, "id", payload.id);
+  if (rowIdx === -1) throw new Error("Warga tidak ditemukan: " + payload.id);
+  const current = {};
+  const currentRow = sh.getRange(rowIdx, 1, 1, RESIDENT_HEADERS.length).getValues()[0];
+  RESIDENT_HEADERS.forEach((h, i) => (current[h] = currentRow[i]));
+  const merged = { ...current, ...payload };
+  validateResidentPayload_(merged, payload.id);
+  merged.updated_at = nowIso_();
+  const row = RESIDENT_HEADERS.map((h) => (merged[h] === undefined || merged[h] === null ? "" : merged[h]));
+  sh.getRange(rowIdx, 1, 1, RESIDENT_HEADERS.length).setValues([row]);
+
+  if (String(merged.relationship).toLowerCase() === "kepala keluarga") {
+    const hh = sheet_(SHEET_NAMES.HOUSEHOLDS);
+    const hIdx = findRowIndexById_(hh, HOUSEHOLD_HEADERS, "id", merged.household_id);
+    if (hIdx !== -1) {
+      const headCol = HOUSEHOLD_HEADERS.indexOf("head_resident_id") + 1;
+      hh.getRange(hIdx, headCol).setValue(merged.id);
+    }
+  }
+  return { resident: merged };
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — MASTER JENIS IURAN (DuesTypes)
+   --------------------------------------------------------------------- */
+function apiSaveDuesTypes(payload) {
+  const list = payload.duesTypes || [];
+  const rows = list.map((dt) => ({
+    id: dt.id || ("dt-" + Utilities.getUuid().slice(0, 8)),
+    name: String(dt.name || "").trim(),
+    amount: Number(dt.amount) || 0,
+    active: dt.active === false ? false : true,
+  }));
+  if (rows.some((r) => !r.name)) throw new Error("Nama jenis iuran wajib diisi.");
+  const sh = getOrCreateSheet_(ss_(), SHEET_NAMES.DUES_TYPES, DUES_TYPE_HEADERS);
+  writeRows_(sh, DUES_TYPE_HEADERS, rows);
+  return { duesTypes: rows };
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — GENERATE TAGIHAN IURAN BULANAN (Dues)
+   --------------------------------------------------------------------- */
+function apiGenerateDues(payload) {
+  const period = String(payload.period || "").trim();
+  const duesTypeId = payload.dues_type_id;
+  if (!period) throw new Error("Periode wajib diisi.");
+  if (!duesTypeId) throw new Error("Jenis iuran wajib dipilih.");
+
+  const duesType = readAll_(SHEET_NAMES.DUES_TYPES).find((d) => String(d.id) === String(duesTypeId));
+  if (!duesType) throw new Error("Jenis iuran tidak ditemukan.");
+  const amount = Number(duesType.amount) || 0;
+
+  // Hanya rumah berstatus aktif yang ditagih (rumah kosong/pindah dilewati).
+  const households = readAll_(SHEET_NAMES.HOUSEHOLDS).filter(
+    (h) => String(h.status) !== "Pindah" && String(h.status) !== "Nonaktif"
+  );
+  const existingKeys = new Set(
+    readAll_(SHEET_NAMES.DUES).map((d) => d.household_id + "|" + d.dues_type_id + "|" + d.period)
+  );
+
+  const now = nowIso_();
+  const newRows = [];
+  households.forEach((h, i) => {
+    const key = h.id + "|" + duesTypeId + "|" + period;
+    if (existingKeys.has(key)) return; // sudah pernah dibuat -> jangan buat tagihan ganda
+    newRows.push({
+      id: "due-" + new Date().getTime() + "-" + i + "-" + Math.random().toString(36).slice(2, 5),
+      household_id: h.id,
+      dues_type_id: duesTypeId,
+      period: period,
+      amount: amount,
+      paid_amount: 0,
+      status: "belum",
+      payment_date: "",
+      created_at: now,
+      updated_at: now,
+    });
+  });
+
+  if (newRows.length > 0) {
+    const sh = sheet_(SHEET_NAMES.DUES);
+    const startRow = sh.getLastRow() + 1;
+    const values = newRows.map((r) => DUES_HEADERS.map((h) => (r[h] === undefined || r[h] === null ? "" : r[h])));
+    sh.getRange(startRow, 1, values.length, DUES_HEADERS.length).setValues(values);
+  }
+
+  return {
+    created: newRows.length,
+    skipped: households.length - newRows.length,
+    dues: newRows,
+  };
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — CATAT PEMBAYARAN IURAN (Dues + Payments + Transactions)
+   Operasi ini digabung jadi satu (atomik dengan LockService lewat doPost)
+   supaya Dues, Payments, dan Transactions selalu konsisten:
+     Payment + Dues update + Transaction  ->  satu operasi.
+   --------------------------------------------------------------------- */
+function apiRecordDuesPayment(payload) {
+  const duesSh = sheet_(SHEET_NAMES.DUES);
+  const rowIdx = findRowIndexById_(duesSh, DUES_HEADERS, "id", payload.dues_id);
+  if (rowIdx === -1) throw new Error("Tagihan iuran tidak ditemukan: " + payload.dues_id);
+  const currentRow = duesSh.getRange(rowIdx, 1, 1, DUES_HEADERS.length).getValues()[0];
+  const dues = {};
+  DUES_HEADERS.forEach((h, i) => (dues[h] = currentRow[i]));
+
+  const amountToPay = Number(payload.amount) || 0;
+  if (amountToPay <= 0) throw new Error("Nominal pembayaran harus lebih dari 0.");
+  const total = Number(dues.amount) || 0;
+  const alreadyPaid = Number(dues.paid_amount) || 0;
+  const sisa = Math.max(0, total - alreadyPaid);
+  if (sisa <= 0) throw new Error("Tagihan ini sudah lunas.");
+  const applied = Math.min(amountToPay, sisa);
+  const newPaid = alreadyPaid + applied;
+  const newStatus = newPaid >= total ? "lunas" : "sebagian";
+  const paymentDate = payload.date || normalizeDate_(new Date());
+
+  // 1) Update baris Dues.
+  const updatedDues = { ...dues, paid_amount: newPaid, status: newStatus, payment_date: paymentDate, updated_at: nowIso_() };
+  const duesRow = DUES_HEADERS.map((h) => (updatedDues[h] === undefined || updatedDues[h] === null ? "" : updatedDues[h]));
+  duesSh.getRange(rowIdx, 1, 1, DUES_HEADERS.length).setValues([duesRow]);
+
+  // 2) Ambil data rumah / kepala keluarga / jenis iuran untuk keterangan transaksi.
+  const household = readAll_(SHEET_NAMES.HOUSEHOLDS).find((h) => String(h.id) === String(dues.household_id));
+  const head = household
+    ? readAll_(SHEET_NAMES.RESIDENTS).find((r) => String(r.id) === String(household.head_resident_id))
+    : null;
+  const duesType = readAll_(SHEET_NAMES.DUES_TYPES).find((d) => String(d.id) === String(dues.dues_type_id));
+  const houseLabel = household ? household.house_number : "-";
+  const payerName = head ? head.name : household ? household.address || ("Rumah No. " + houseLabel) : "Warga";
+
+  // 3) Catat di tabel Payments (histori pembayaran, konsisten dgn struktur lama).
+  const paymentRecord = {
+    id: "pay-due-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    resident_id: dues.household_id,
+    period: dues.period,
+    paid_amount: applied,
+    payment_date: paymentDate,
+  };
+  appendRow_(SHEET_NAMES.PAYMENTS, paymentRecord, PAYMENT_HEADERS);
+
+  // 4) Buat transaksi pemasukan Kas RT secara otomatis (kategori "Iuran Warga").
+  const txCode = generateTxCode_(paymentDate);
+  const description = "Iuran " + (duesType ? duesType.name : "Warga") + " periode " + dues.period + " - Rumah No. " + houseLabel;
+  const tx = {
+    id: "tx-" + new Date().getTime() + "-" + Math.random().toString(36).slice(2, 6),
+    transaction_code: txCode,
+    transaction_date: paymentDate,
+    type: "masuk",
+    category: "Iuran Warga",
+    description: description,
+    amount: applied,
+    source: payerName,
+    payment_method: payload.method || "Tunai",
+    attachment: null,
+    notes: "iuran_dues_id:" + dues.id,
+    created_by: payload.created_by || "",
+  };
+  appendRow_(SHEET_NAMES.TRANSACTIONS, tx, TX_HEADERS);
+
+  return { dues: updatedDues, payment: paymentRecord, transaction: tx };
+}
+
 /*  =====================================================================
     SETUP — jalankan sekali untuk membuat sheet + data demo
     ===================================================================== */
@@ -367,6 +694,21 @@ function SETUP() {
     { period: "2026-06", winner_id: "r8" },
     { period: "2026-07", winner_id: "r12" },
   ]);
+
+  // -- Phase 2: Master Data Rumah + Warga + Jenis Iuran + Tagihan --
+  const { households, residents } = buildDemoHouseholdsAndResidents_();
+  const householdsSheet = getOrCreateSheet_(ss, SHEET_NAMES.HOUSEHOLDS, HOUSEHOLD_HEADERS);
+  writeRows_(householdsSheet, HOUSEHOLD_HEADERS, households);
+
+  const residentsSheet = getOrCreateSheet_(ss, SHEET_NAMES.RESIDENTS, RESIDENT_HEADERS);
+  writeRows_(residentsSheet, RESIDENT_HEADERS, residents);
+
+  const duesTypes = buildDemoDuesTypes_();
+  const duesTypesSheet = getOrCreateSheet_(ss, SHEET_NAMES.DUES_TYPES, DUES_TYPE_HEADERS);
+  writeRows_(duesTypesSheet, DUES_TYPE_HEADERS, duesTypes);
+
+  const duesSheet = getOrCreateSheet_(ss, SHEET_NAMES.DUES, DUES_HEADERS);
+  writeRows_(duesSheet, DUES_HEADERS, buildDemoDues_(households, duesTypes));
 
   SpreadsheetApp.getUi().alert(
     "Setup selesai! Semua sheet & data demo sudah dibuat. Sekarang lakukan Deploy > New deployment > Web app."
@@ -456,6 +798,208 @@ function buildDemoPayments_() {
       period: "2026-08",
       paid_amount: paid,
       payment_date: paid > 0 ? "2026-08-" + String(3 + (i % 8)).padStart(2, "0") : "",
+    };
+  });
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — DATA DEMO: RUMAH + WARGA (20 rumah, 58 warga)
+   --------------------------------------------------------------------- */
+function buildDemoHouseholdsAndResidents_() {
+  // [ no rumah, alamat, status rumah, [ [nama, hubungan, gender, status warga, pekerjaan], ... ] ]
+  const raw = [
+    ["01", "Jl. Melati No. 1", "Aktif", [
+      ["Ahmad Zainuri", "Kepala Keluarga", "L", "Tetap", "Wiraswasta"],
+      ["Siti Aminah", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Budi Zainuri", "Anak", "L", "Tetap", "Pelajar"],
+    ]],
+    ["02", "Jl. Melati No. 2", "Aktif", [
+      ["Dedi Kurniawan", "Kepala Keluarga", "L", "Tetap", "Karyawan Swasta"],
+      ["Rina Kurniawan", "Istri", "P", "Tetap", "Guru"],
+    ]],
+    ["03", "Jl. Melati No. 3", "Aktif", [
+      ["Yusuf Hakim", "Kepala Keluarga", "L", "Tetap", "PNS"],
+      ["Dewi Hakim", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Ani Hakim", "Anak", "P", "Tetap", "Mahasiswa"],
+      ["Rizki Hakim", "Anak", "L", "Tetap", "Pelajar"],
+    ]],
+    ["04", "Jl. Melati No. 4", "Aktif", [
+      ["Hendra Wijaya", "Kepala Keluarga", "L", "Tetap", "Pengusaha"],
+      ["Maya Wijaya", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Fajar Wijaya", "Anak", "L", "Tetap", "Pelajar"],
+    ]],
+    ["05", "Jl. Melati No. 5", "Aktif", [
+      ["Ratna Sari", "Kepala Keluarga", "P", "Tetap", "Wiraswasta"],
+      ["Agus Santoso", "Suami", "L", "Tetap", "Karyawan Swasta"],
+    ]],
+    ["06", "Jl. Anggrek No. 6", "Aktif", [
+      ["Slamet Riyadi", "Kepala Keluarga", "L", "Tetap", "Petugas Kebersihan"],
+      ["Yanti Slamet", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Doni Slamet", "Anak", "L", "Tetap", "Pelajar"],
+    ]],
+    ["07", "Jl. Anggrek No. 7", "Aktif", [
+      ["Rohman Hidayat", "Kepala Keluarga", "L", "Tetap", "Satpam"],
+      ["Wulan Rohman", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+    ]],
+    ["08", "Jl. Anggrek No. 8", "Aktif", [
+      ["Joko Susanto", "Kepala Keluarga", "L", "Tetap", "PNS"],
+      ["Fitri Susanto", "Istri", "P", "Tetap", "Bidan"],
+      ["Nanda Susanto", "Anak", "P", "Tetap", "Mahasiswa"],
+    ]],
+    ["09", "Jl. Anggrek No. 9", "Aktif", [
+      ["Bambang Setiawan", "Kepala Keluarga", "L", "Tetap", "Wiraswasta"],
+      ["Lina Setiawan", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Tono Setiawan", "Anak", "L", "Tetap", "Pelajar"],
+    ]],
+    ["10", "Jl. Anggrek No. 10", "Aktif", [
+      ["Hasan Basri", "Kepala Keluarga", "L", "Tetap", "Karyawan Swasta"],
+      ["Sari Hasan", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Wati Hasan", "Anak", "P", "Tetap", "Pelajar"],
+    ]],
+    ["11", "Jl. Kenanga No. 11", "Aktif", [
+      ["Eko Prasetyo", "Kepala Keluarga", "L", "Kontrak", "Karyawan Swasta"],
+      ["Nur Prasetyo", "Istri", "P", "Kontrak", "Ibu Rumah Tangga"],
+    ]],
+    ["12", "Jl. Kenanga No. 12", "Aktif", [
+      ["Andi Saputra", "Kepala Keluarga", "L", "Tetap", "Wiraswasta"],
+      ["Dian Saputra", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+    ]],
+    ["13", "Jl. Kenanga No. 13", "Aktif", [
+      ["Karto Wijoyo", "Kepala Keluarga", "L", "Tetap", "Pensiunan"],
+      ["Warsi Karto", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+    ]],
+    ["14", "Jl. Kenanga No. 14", "Aktif", [
+      ["Feri Irawan", "Kepala Keluarga", "L", "Pendatang", "Freelancer"],
+      ["Sinta Irawan", "Istri", "P", "Pendatang", "Karyawan Swasta"],
+    ]],
+    ["15", "Jl. Kenanga No. 15", "Aktif", [
+      ["Yudi Firmansyah", "Kepala Keluarga", "L", "Tetap", "Wiraswasta"],
+      ["Ika Firmansyah", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+    ]],
+    ["16", "Jl. Dahlia No. 16", "Aktif", [
+      ["Wahyu Nugroho", "Kepala Keluarga", "L", "Kos", "Karyawan Swasta"],
+      ["Putri Amelia", "Kos", "P", "Kos", "Karyawan Swasta"],
+    ]],
+    ["17", "Jl. Dahlia No. 17", "Aktif", [
+      ["Sugianto", "Kepala Keluarga", "L", "Tetap", "Wiraswasta"],
+      ["Ningsih Sugianto", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Bagus Sugianto", "Anak", "L", "Tetap", "Pelajar"],
+      ["Ayu Sugianto", "Anak", "P", "Tetap", "Pelajar"],
+    ]],
+    ["18", "Jl. Dahlia No. 18", "Aktif", [
+      ["Hendro Purnomo", "Kepala Keluarga", "L", "Tetap", "PNS"],
+      ["Ratih Purnomo", "Istri", "P", "Tetap", "Guru"],
+      ["Bima Purnomo", "Anak", "L", "Tetap", "Mahasiswa"],
+      ["Citra Purnomo", "Anak", "P", "Tetap", "Pelajar"],
+    ]],
+    ["19", "Jl. Dahlia No. 19", "Aktif", [
+      ["Ismail Marzuki", "Kepala Keluarga", "L", "Pendatang", "Pedagang"],
+      ["Halimah Ismail", "Istri", "P", "Pendatang", "Ibu Rumah Tangga"],
+      ["Umar Ismail", "Anak", "L", "Pendatang", "Pelajar"],
+      ["Aisyah Ismail", "Anak", "P", "Pendatang", "Pelajar"],
+    ]],
+    ["20", "Jl. Dahlia No. 20", "Aktif", [
+      ["Sutrisno", "Kepala Keluarga", "L", "Tetap", "Pensiunan"],
+      ["Painem Sutrisno", "Istri", "P", "Tetap", "Ibu Rumah Tangga"],
+      ["Kartika Sutrisno", "Anak", "P", "Tetap", "Karyawan Swasta"],
+      ["Rendra Sutrisno", "Anak", "L", "Tetap", "Mahasiswa"],
+    ]],
+  ];
+
+  const now = "2026-01-01T00:00:00";
+  const households = [];
+  const residents = [];
+
+  raw.forEach((entry, hIdx) => {
+    const [houseNumber, address, houseStatus, members] = entry;
+    const householdId = "h-demo-" + houseNumber;
+    const kkNumber = "3201" + String(1000000000 + hIdx * 37).slice(-12);
+
+    let headResidentId = "";
+    const houseResidents = members.map((m, mIdx) => {
+      const [name, relation, gender, status, occupation] = m;
+      const residentId = "res-demo-" + houseNumber + "-" + (mIdx + 1);
+      if (String(relation) === "Kepala Keluarga") headResidentId = residentId;
+      const nik = "3201" + String(houseNumber).padStart(2, "0") + "01" + "199" + String(mIdx) +
+        String(1000 + hIdx * 7 + mIdx).slice(-4);
+      return {
+        id: residentId,
+        household_id: householdId,
+        nik: nik.padEnd(16, "0").slice(0, 16),
+        kk_number: kkNumber,
+        name: name,
+        gender: gender,
+        birth_place: "Yogyakarta",
+        birth_date: "198" + (mIdx % 9) + "-0" + (((hIdx + mIdx) % 9) + 1) + "-1" + (mIdx % 9),
+        phone: "0812" + String(3000000 + hIdx * 91 + mIdx * 13).slice(-7),
+        relationship: relation,
+        occupation: occupation,
+        resident_status: status,
+        created_at: now,
+        updated_at: now,
+      };
+    });
+
+    // Titik koordinat demo di sekitar Gang Sempit, Sidomulyo, Triharjo,
+    // Sleman (lokasi RT sebenarnya), disusun per baris jalan (5 rumah /
+    // jalan) supaya terlihat rapi saat ditampilkan di peta. Ganti dengan
+    // koordinat asli per rumah lewat form Edit Rumah jika sudah tersedia.
+    const CENTER_LAT = -7.674597, CENTER_LNG = 110.344724;
+    const LAT_STEP = 0.0009, LNG_STEP = 0.0011;
+    const row = Math.floor(hIdx / 5);
+    const col = hIdx % 5;
+    const lat = CENTER_LAT - row * LAT_STEP + (col % 2 === 0 ? 0.00015 : -0.00015);
+    const lng = CENTER_LNG + col * LNG_STEP;
+
+    households.push({
+      id: householdId,
+      house_number: houseNumber,
+      address: address,
+      head_resident_id: headResidentId,
+      status: houseStatus,
+      notes: "",
+      lat: lat,
+      lng: lng,
+      created_at: now,
+      updated_at: now,
+    });
+    houseResidents.forEach((r) => residents.push(r));
+  });
+
+  return { households, residents };
+}
+
+/* ---------------------------------------------------------------------
+   PHASE 2 — DATA DEMO: JENIS IURAN + TAGIHAN AGUSTUS 2026
+   --------------------------------------------------------------------- */
+function buildDemoDuesTypes_() {
+  return [
+    { id: "dt-iuranrt", name: "Iuran RT", amount: 150000, active: true },
+    { id: "dt-kebersihan", name: "Kebersihan", amount: 20000, active: true },
+    { id: "dt-keamanan", name: "Keamanan", amount: 30000, active: true },
+    { id: "dt-danasosial", name: "Dana Sosial", amount: 20000, active: true },
+  ];
+}
+
+function buildDemoDues_(households, duesTypes) {
+  const iuranRt = duesTypes.find((d) => d.id === "dt-iuranrt");
+  const amount = iuranRt ? iuranRt.amount : 150000;
+  const now = "2026-08-01T00:00:00";
+  return households.map((h, i) => {
+    const seed = i % 3; // 0 = belum, 1 = sebagian, 2 = lunas
+    const paid = seed === 0 ? 0 : seed === 1 ? Math.round(amount * 0.5) : amount;
+    const status = paid >= amount ? "lunas" : paid > 0 ? "sebagian" : "belum";
+    return {
+      id: "due-demo-" + h.house_number,
+      household_id: h.id,
+      dues_type_id: "dt-iuranrt",
+      period: "2026-08",
+      amount: amount,
+      paid_amount: paid,
+      status: status,
+      payment_date: paid > 0 ? "2026-08-" + String(3 + (i % 20)).padStart(2, "0") : "",
+      created_at: now,
+      updated_at: now,
     };
   });
 }
