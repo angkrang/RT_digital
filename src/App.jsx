@@ -1684,6 +1684,39 @@ const AdminStatsBar = ({ households, residents }) => {
 /* -- Form Tambah/Edit Rumah -- */
 const RT_MAP_CENTER = [-7.674597, 110.344724]; // Gang Sempit, Sidomulyo, Triharjo, Sleman
 
+/* -- Dua pilihan tampilan peta: "Peta Jalan" (data OpenStreetMap, kadang
+   belum sesuai kondisi asli karena hasil kontribusi komunitas) dan "Citra
+   Satelit" (foto udara asli dari Esri, gratis tanpa API key) supaya
+   kondisi rumah/tanah sebenarnya tetap bisa dicek. -- */
+const MAP_LAYERS = {
+  jalan: {
+    label: "Peta Jalan",
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+  satelit: {
+    label: "Citra Satelit",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+  },
+};
+
+const MapLayerToggle = ({ layer, setLayer }) => (
+  <div className="inline-flex rounded-lg p-0.5" style={{ background: C.navyFaint }}>
+    {Object.entries(MAP_LAYERS).map(([key, l]) => (
+      <button
+        key={key}
+        type="button"
+        onClick={() => setLayer(key)}
+        className="rtd-focus rounded-md px-2.5 py-1 text-[11px] font-semibold transition"
+        style={layer === key ? { background: C.card, color: C.navy, boxShadow: "0 1px 2px rgba(0,0,0,0.08)" } : { color: C.textMuted }}
+      >
+        {l.label}
+      </button>
+    ))}
+  </div>
+);
+
 /* -- Klik-pilih lokasi di peta (pengganti input lat/lng manual) -- */
 const MapClickHandler = ({ onPick }) => {
   useMapEvents({ click(e) { onPick(e.latlng.lat, e.latlng.lng); } });
@@ -1691,13 +1724,16 @@ const MapClickHandler = ({ onPick }) => {
 };
 
 const MapLocationPicker = ({ lat, lng, onChange }) => {
+  const [layer, setLayer] = useState("satelit");
   const hasPoint = lat !== "" && lat != null && lng !== "" && lng != null && !Number.isNaN(Number(lat)) && !Number.isNaN(Number(lng));
   const center = hasPoint ? [Number(lat), Number(lng)] : RT_MAP_CENTER;
   return (
     <div>
+      <div className="mb-2 flex justify-end"><MapLayerToggle layer={layer} setLayer={setLayer} /></div>
       <div className="overflow-hidden rounded-lg" style={{ border: `1px solid ${C.border}`, height: 260 }}>
         <MapContainer center={center} zoom={hasPoint ? 18 : 16} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
-          <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <TileLayer key={layer} attribution={MAP_LAYERS[layer].attribution} url={MAP_LAYERS[layer].url} />
+          <MapAutoResize />
           <MapClickHandler onPick={(la, ln) => onChange(la.toFixed(6), ln.toFixed(6))} />
           {hasPoint && <Marker position={[Number(lat), Number(lng)]} icon={houseMarkerIcon(C.navy)} />}
         </MapContainer>
@@ -2027,6 +2063,28 @@ const houseMarkerIcon = (color) =>
     popupAnchor: [0, -24],
   });
 
+/* -- Perbaikan bug umum Leaflet: peta di dalam modal/tab sering menghitung
+   ukurannya sebelum layout benar-benar selesai (mis. animasi modal .18s),
+   sehingga sebagian tile OpenStreetMap tidak termuat / peta terlihat
+   "tidak update". invalidateSize() memaksa Leaflet menghitung ulang. -- */
+const MapAutoResize = () => {
+  const map = useMap();
+  useEffect(() => {
+    const timers = [80, 250, 500].map((ms) => setTimeout(() => map.invalidateSize(), ms));
+    const onResize = () => map.invalidateSize();
+    window.addEventListener("resize", onResize);
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(map.getContainer());
+    return () => {
+      timers.forEach(clearTimeout);
+      window.removeEventListener("resize", onResize);
+      ro.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+};
+
 const FitBoundsToMarkers = ({ points }) => {
   const map = useMap();
   useEffect(() => {
@@ -2042,6 +2100,7 @@ const FitBoundsToMarkers = ({ points }) => {
 };
 
 const PetaRT = ({ households, residents, dues, onSelect }) => {
+  const [layer, setLayer] = useState("satelit");
   const residentMap = useMemo(() => Object.fromEntries(residents.map((r) => [r.id, r])), [residents]);
 
   const latestPeriod = useMemo(() => {
@@ -2072,14 +2131,17 @@ const PetaRT = ({ households, residents, dues, onSelect }) => {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg px-3.5 py-2.5 text-xs" style={{ background: C.navyFaint, color: C.navy }}>
-        <span className="font-semibold">
-          {latestPeriod ? `Status iuran periode ${formatPeriodLabel(latestPeriod)}:` : "Warna menunjukkan status iuran:"}
-        </span>
-        <LegendDot color={DENAH_STATUS_COLOR.lunas} label="Lunas" />
-        <LegendDot color={DENAH_STATUS_COLOR.sebagian} label="Sebagian" />
-        <LegendDot color={DENAH_STATUS_COLOR.belum} label="Belum Bayar" />
-        <LegendDot color={DENAH_STATUS_COLOR.none} label="Belum ada tagihan" />
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg px-3.5 py-2.5 text-xs" style={{ background: C.navyFaint, color: C.navy }}>
+          <span className="font-semibold">
+            {latestPeriod ? `Status iuran periode ${formatPeriodLabel(latestPeriod)}:` : "Warna menunjukkan status iuran:"}
+          </span>
+          <LegendDot color={DENAH_STATUS_COLOR.lunas} label="Lunas" />
+          <LegendDot color={DENAH_STATUS_COLOR.sebagian} label="Sebagian" />
+          <LegendDot color={DENAH_STATUS_COLOR.belum} label="Belum Bayar" />
+          <LegendDot color={DENAH_STATUS_COLOR.none} label="Belum ada tagihan" />
+        </div>
+        <MapLayerToggle layer={layer} setLayer={setLayer} />
       </div>
 
       {withoutCoords.length > 0 && (
@@ -2092,9 +2154,11 @@ const PetaRT = ({ households, residents, dues, onSelect }) => {
       <div className="overflow-hidden rounded-xl" style={{ border: `1px solid ${C.border}`, height: 480 }}>
         <MapContainer center={points[0] || defaultCenter} zoom={17} scrollWheelZoom style={{ height: "100%", width: "100%" }}>
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            key={layer}
+            attribution={MAP_LAYERS[layer].attribution}
+            url={MAP_LAYERS[layer].url}
           />
+          <MapAutoResize />
           <FitBoundsToMarkers points={points} />
           {withCoords.map((h) => {
             const head = residentMap[h.head_resident_id];
